@@ -46,6 +46,8 @@ local function outline(frame, c, a)
     strip("TOPRIGHT", "BOTTOMRIGHT", false)
 end
 
+local MIRROR_WHY = "The beta client forgets addon settings when the game restarts. This saves your setup in one general macro and reads it back at login."
+
 local function text(parent, font, str, c)
     local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
     if str then fs:SetText(str) end
@@ -381,6 +383,14 @@ refreshList = function()
     win.names:SetChecked(d.showNames)
     win.minimap:SetChecked(not d.minimap.hide)
     win.macroMirror:SetChecked(d.macroMirror and true or false)
+    -- Say so, in colour, while this character's setup would not survive a restart.
+    if CDM.SettingsAtRisk and CDM.SettingsAtRisk() then
+        win.mirrorWhy:SetText("NOT saved on this character yet. The beta client forgets addon settings on restart: tick this to keep your setup in a macro.")
+        win.mirrorWhy:SetTextColor(ACCENT[1], ACCENT[2], ACCENT[3])
+    else
+        win.mirrorWhy:SetText(MIRROR_WHY)
+        win.mirrorWhy:SetTextColor(0.5, 0.5, 0.5)
+    end
     refreshOrderList()
 end
 
@@ -512,7 +522,8 @@ local function build()
     win.names = check("Show spell names", function(self) db().showNames = self:GetChecked() and true or false CDM.Refresh() end)
     win.minimap = check("Minimap button", function(self) ForeverCDM_SetMinimapShown(self:GetChecked() and true or false) end)
     win.macroMirror = check("Keep settings in a macro", function(self) ForeverCDM_SetMacroMirror(self:GetChecked() and true or false) end)
-    local why = text(opts, "GameFontDisableSmall", "The beta client forgets addon settings when the game restarts. This saves your setup in one general macro and reads it back at login.")
+    local why = text(opts, "GameFontDisableSmall", MIRROR_WHY)
+    win.mirrorWhy = why
     why:SetPoint("TOPLEFT", 34, y + 4)
     why:SetWidth(148)
     why:SetJustifyH("LEFT")

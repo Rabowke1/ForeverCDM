@@ -594,7 +594,7 @@ end
 local MIRROR_DATA, MIRROR_MACROS = 235, 3      -- data characters per macro, macros per character
 local MIRROR_ICON = "INV_Misc_Gear_01"
 local mirror = { hadSV = false, found = 0, restored = false, ready = false, wrote = 0, note = "nothing written yet" }
-local mirrorDirty, hinted = false, false
+local mirrorDirty, hinted, loginHinted = false, false, false
 
 local function mirrorName(i)
     -- hashed so any character name, in any alphabet, gives a short plain macro name (16 character limit)
@@ -731,13 +731,32 @@ local function writeMirror()
 end
 
 persistSoon = function()
-    if db and not db.macroMirror and not mirror.hadSV and not hinted and mirror.ready then
+    if db and not db.macroMirror and not mirror.hadSV and not hinted and not loginHinted and mirror.ready then
         hinted = true
         say("heads up: the beta client forgets addon settings when the game restarts. Tick \"Keep settings in a macro\" in /fcdm to keep this setup.")
     end
     if mirrorDirty then return end
     mirrorDirty = true
     if C_Timer and C_Timer.After then C_Timer.After(1, writeMirror) else writeMirror() end
+end
+
+-- True when this character's setup will be gone after a restart: the client gave us no
+-- saved settings, and the macro that stands in for them is off. The macro is opt-in per
+-- character, so a new alt is in this state until its box is ticked. Forever only: on a
+-- working client an empty load just means a first install.
+local function isForeverClient()
+    local iface = GetBuildInfo and select(4, GetBuildInfo())
+    return type(iface) == "number" and iface >= 16000 and iface < 20000
+end
+
+local function settingsAtRisk()
+    return db ~= nil and mirror.ready and not db.macroMirror and not mirror.hadSV and isForeverClient()
+end
+
+local function loginHint()
+    if loginHinted or not settingsAtRisk() then return end
+    loginHinted = true
+    say("settings are NOT being kept on this character: the beta client forgets them when the game restarts. /fcdm mirror on (or the \"Keep settings in a macro\" box in /fcdm) saves them in a macro. It is set per character.")
 end
 
 -- Called at login and again once the macro list has certainly loaded.
@@ -773,6 +792,7 @@ function ForeverCDM.Persist() persistSoon() end
 function ForeverCDM.SpellRank(id) return rankText[id] end
 function ForeverCDM.RankNumber(id) return rankNumber(id) end
 function ForeverCDM.GetDB() return db end
+function ForeverCDM.SettingsAtRisk() return settingsAtRisk() end
 function ForeverCDM.Refresh() refreshAll() end
 function ForeverCDM.SpellName(id) return spellName(id) end
 function ForeverCDM.SpellIcon(id) return spellIcon(id) end
@@ -794,6 +814,7 @@ function lateMirror(final)
         if ForeverCDM_InitMinimap then ForeverCDM_InitMinimap() end
         if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
     end
+    loginHint()
 end
 
 local ev = CreateFrame("Frame")
@@ -806,6 +827,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         ensureDB()
         -- If UPDATE_MACROS already fired, the macro list is loaded and this read is final.
         if mirrorLogin(mirror.macrosSeen) then say(RESTORED_MSG) end
+        loginHint()
         buildRankIndex()
         newRow("cds", "Cooldowns")
         newRow("utilities", "Utilities")

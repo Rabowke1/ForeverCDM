@@ -236,11 +236,30 @@ slash('store 1/1 anything')
 assert(said('clicking it does nothing'), 'the macro click handler is missing')
 
 -- 13. A client without the macro API: everything still loads.
+local savedCreateMacro = CreateMacro
 CreateMacro = nil
 db = session(nil)
 slash('add 5')
 slash('mirror on')
 slash('mirror')
 assert(db.cds[1] == 5 and said('no macro API'), 'addon should run without the mirror')
+
+-- 14. On the Forever client a character with no macro is warned at login, once, and a
+-- character whose macro is on (or any other client) is not.
+CreateMacro, macros = savedCreateMacro, {}
+GetBuildInfo = function() return '1.60.1', '69913', 'Sep 18 2026', 16001 end
+db = session(nil)
+assert(said('NOT being kept'), 'a Forever character without the macro should be warned at login')
+printed = {}
+slash('add 7')
+assert(not said('Keep settings in a macro') or not said('heads up'), 'the change hint should not repeat the login warning')
+slash('mirror on')
+db = session(nil)
+assert(not said('NOT being kept'), 'no warning once the macro is on')
+macros = {}
+GetBuildInfo = function() return '12.1.0', '70000', 'Sep 1 2026', 120100 end
+db = session(nil)
+assert(not said('NOT being kept'), 'an empty load on a working client is only a first install')
+GetBuildInfo = nil
 
 io.write('settings macro: opt-in, restart, late macro list, combat, chunking, per-character and fallback checks passed\n')
