@@ -23,6 +23,7 @@ for _, name in ipairs({ 'SetTexCoord', 'ClearAllPoints', 'SetMovable', 'SetClamp
     'SetText' }) do methods[name] = noop end
 function methods:SetSize(w, h) self.width, self.height = w, h end
 function methods:GetWidth() return self.width or 100 end
+function methods:GetEffectiveScale() return 1 end
 function methods:SetScript(k, fn) self.scripts[k] = fn end
 function methods:RegisterEvent(e) self.events[e] = true end
 function methods:RegisterUnitEvent(e) self.events[e] = true end
@@ -141,6 +142,19 @@ assert(db.minimap.angle == -42 and db.minimap.hide == true, 'minimap button stat
 assert(db.buffDurations[201] == 1800, 'learned buff duration was lost')
 assert(db.macroMirror == true, 'the macro existing should switch the option back on')
 assert(not said('Keep settings in a macro'), 'no hint needed once opted in')
+
+-- Anchors survive the macro round trip even when their target loads later.
+db.anchors.buffs = { 'LateAnchorFrame', 12.3, -45.6 }
+slash('lock')
+db = session(nil)
+assert(db.anchors.buffs[1] == 'LateAnchorFrame' and db.anchors.buffs[2] == 12.3
+    and db.anchors.buffs[3] == -45.6, 'frame anchor lost in macro round trip')
+assert(db.pos.buffs[1] == 'TOPLEFT' and db.pos.buffs[2] == 123.4,
+    'saving an anchor overwrote its screen fallback')
+db.anchors.buffs = nil
+slash('lock')
+db = session(nil)
+assert(db.anchors.buffs == nil, 'detached anchor returned after restart')
 
 -- 3. Cold start where the macro list arrives AFTER login. Nothing may be written
 --    before it is read, or the stored setup would be replaced by defaults.

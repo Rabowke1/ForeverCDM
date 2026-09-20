@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- Respect Edit Mode's Enable Snap setting: show alignment guides while dragging,
+  snap nearby centres/edges on drop, and hold Shift to bypass. Existing frame
+  anchors retain the corrected offset.
+- Right-click a row handle in Edit Mode to anchor it to a Blizzard frame or another
+  addon row. Preserve offsets while dragging, allow detaching, reject circular
+  anchors, and restore frame targets through saved settings and the settings macro.
+- Show draggable handles for all three rows in the game's Edit Mode, including empty
+  and locked rows. Keep the normal lock preference and disable dragging in combat.
+- Save dropped positions in UIParent coordinates and retain the existing settings
+  macro support. Row positions remain shared across Blizzard layouts and save on drop.
+
 ## 0.5.0 (2026-09-18)
 - **Items on your bars.** Trinkets, potions, bandages, engineering gadgets: anything with a Use
   effect. The Spellbook card has a new Items group listing every usable item you are wearing or
