@@ -16,6 +16,7 @@
 -- COMMANDS (see /fcdm help):
 --   /fcdm add <spell>         add a spell cooldown icon (name or spellID)
 --   /fcdm addbuff <spell>     add a buff to watch on yourself
+--   /fcdm adddebuff <spell>   add one of your debuffs to watch on your target
 --   /fcdm remove <spell>      remove from either row
 --   /fcdm auto                add every active, non-passive spellbook spell with a cooldown
 --   /fcdm list | lock | unlock | size <px> | spacing <px> | reset
@@ -28,15 +29,19 @@ local DEFAULTS = {
     cds = {},     -- ordered list of spellIDs
     buffs = {},   -- ordered list of spellIDs
     utilities = {}, -- ordered list of utility spellIDs
-    pos = { cds = { "CENTER", 0, -170 }, utilities = { "CENTER", 0, -220 }, buffs = { "CENTER", 0, -270 } },
+    debuffs = {},   -- ordered list of spellIDs: your own debuffs on the target (Serpent Sting...)
+    pos = { cds = { "CENTER", 0, -170 }, utilities = { "CENTER", 0, -220 }, buffs = { "CENTER", 0, -270 }, debuffs = { "CENTER", 0, -320 } },
     hideReady = false,  -- hide cooldown icons that are ready (off by default: it is a manager, not an alert)
+    hideInactive = false, -- hide buff/debuff icons while the aura is not up (off: they stay dimmed)
     showNames = false,
 }
 
 local db
 local rows = {}          -- key -> row frame
-local icons = { cds = {}, utilities = {}, buffs = {} }
-local BAR_KEYS = { "cds", "utilities", "buffs" }
+local icons = { cds = {}, utilities = {}, buffs = {}, debuffs = {} }
+-- New bars go on the END: the settings macro stores sizes by position in this list.
+local BAR_KEYS = { "cds", "utilities", "buffs", "debuffs" }
+local BAR_LABEL = { cds = "Cooldowns", utilities = "Utility", buffs = "Buffs", debuffs = "Debuffs" }
 local persistSoon        -- defined in the settings-mirror section; called wherever settings change
 local lateMirror         -- defined just above the event frame
 
@@ -64,6 +69,8 @@ local function ensureDB()
     -- Migration for existing profiles: never replace existing ordered lists or positions.
     db.utilities = db.utilities or {}
     db.pos.utilities = db.pos.utilities or { "CENTER", 0, -220 }
+    db.debuffs = db.debuffs or {}
+    db.pos.debuffs = db.pos.debuffs or { "CENTER", 0, -320 }
     db.buffDurations = db.buffDurations or {}   -- spellID -> seconds, learned out of combat
     db.minimap = db.minimap or { angle = 215, hide = false }
     -- Each bar has its own icon size and spacing. Older profiles had one pair
@@ -163,6 +170,7 @@ local function layoutRow(key)
         f.name:SetShown(db.showNames)
         f:ClearAllPoints()
         f:SetPoint("LEFT", row, "LEFT", shown * (size + gap), 0)
+        f.slot = shown
         f:Show()
         shown = shown + 1
     end
@@ -338,6 +346,76 @@ local function spellAuraSecret(id, globalRestricted)
     return true
 end
 
+-- How long does this aura last? A length measured from a readable aura wins;
+-- otherwise the tooltip usually says ("...over 15 sec"). English tooltips only,
+-- so /fcdm duration <spell> <seconds> can set it by hand.
+local function auraDuration(id)
+    if db.buffDurations[id] then return db.buffDurations[id] end
+    local d = C_Spell and C_Spell.GetSpellDescription and C_Spell.GetSpellDescription(id)
+    if type(d) ~= "string" or secret(d) then return nil end
+    return tonumber(d:match("over (%d+) sec") or d:match("for (%d+) sec") or d:match("[Ll]asts (%d+) sec"))
+end
+
+-- An aura that is up and readable: full brightness, real timer, stack count.
+local function drawAura(f, unit, a)
+    f.inactive = false
+    f:SetAlpha(1)
+    f.icon:SetDesaturated(false)
+    local dur, exp = a.duration, a.expirationTime
+    if secret(dur) or secret(exp) then
+        local duration
+        if C_UnitAuras.GetAuraDuration and not secret(a.auraInstanceID) and a.auraInstanceID ~= nil then
+            duration = C_UnitAuras.GetAuraDuration(unit, a.auraInstanceID)
+        end
+        if duration and f.cd.SetCooldownFromDurationObject then
+            f.cd:SetCooldownFromDurationObject(duration)
+        else
+            f.cd:Clear()
+        end
+    elseif dur and dur > 0 then
+        f.cd:SetCooldown(exp - dur, dur)
+        -- Remember how long this aura lasts. In combat the aura is
+        -- unreadable, but our own cast event plus this number is
+        -- enough to draw an honest timer (see onPlayerCast).
+        if db.buffDurations[f.spellID] ~= dur then
+            db.buffDurations[f.spellID] = dur
+            persistSoon()
+        end
+    else
+        f.cd:Clear()
+    end
+    if not secret(a.applications) and (a.applications or 0) > 1 then f.count:SetText(a.applications) else f.count:SetText("") end
+end
+
+-- An aura that is not up. Dimmed by default; with "hide inactive" it vanishes,
+-- so a proc only appears when it happens. While the rows are unlocked it stays
+-- visible either way, so there is something to see while dragging.
+local function drawInactive(f)
+    f.inactive = true
+    f:SetAlpha((db.hideInactive and db.locked) and 0 or 0.25)
+    f.icon:SetDesaturated(true)
+    f.cd:Clear()
+    f.count:SetText("")
+end
+
+-- With "hide inactive" on, close the gaps: visible icons slide left so one
+-- active proc does not float in the middle of an empty bar.
+local function packRow(key)
+    local size, gap = db.rowSize[key], db.rowSpacing[key]
+    local collapse = db.hideInactive and db.locked
+    local n = 0
+    for _, f in ipairs(icons[key]) do
+        if f:IsShown() and not (collapse and f.inactive) then
+            if f.slot ~= n then
+                f.slot = n
+                f:ClearAllPoints()
+                f:SetPoint("LEFT", rows[key], "LEFT", n * (size + gap), 0)
+            end
+            n = n + 1
+        end
+    end
+end
+
 local function updateBuffs()
     local globalRestricted = C_Secrets and C_Secrets.ShouldAurasBeSecret and C_Secrets.ShouldAurasBeSecret()
     for _, f in ipairs(icons.buffs) do
@@ -367,32 +445,7 @@ local function updateBuffs()
                 if not secret(a.auraInstanceID) and a.auraInstanceID ~= nil then
                     f.auraInstanceID = a.auraInstanceID
                 end
-                f:SetAlpha(1)
-                f.icon:SetDesaturated(false)
-                local dur, exp = a.duration, a.expirationTime
-                if secret(dur) or secret(exp) then
-                    local duration
-                    if C_UnitAuras.GetAuraDuration and not secret(a.auraInstanceID) and a.auraInstanceID ~= nil then
-                        duration = C_UnitAuras.GetAuraDuration("player", a.auraInstanceID)
-                    end
-                    if duration and f.cd.SetCooldownFromDurationObject then
-                        f.cd:SetCooldownFromDurationObject(duration)
-                    else
-                        f.cd:Clear()
-                    end
-                elseif dur and dur > 0 then
-                    f.cd:SetCooldown(exp - dur, dur)
-                    -- Remember how long this buff lasts. In combat the aura is
-                    -- unreadable, but our own cast event plus this number is
-                    -- enough to draw an honest timer (see onPlayerCast).
-                    if db.buffDurations[f.spellID] ~= dur then
-                        db.buffDurations[f.spellID] = dur
-                        persistSoon()
-                    end
-                else
-                    f.cd:Clear()
-                end
-                if not secret(a.applications) and (a.applications or 0) > 1 then f.count:SetText(a.applications) else f.count:SetText("") end
+                drawAura(f, "player", a)
             elseif restricted then
                 -- In combat this client refuses EVERY aura read to addon code
                 -- ("Auras cannot be accessed when secret while tainted"), so the
@@ -406,23 +459,23 @@ local function updateBuffs()
                     f.combatRemoved = true        -- our own timer says it ran out
                 end
                 if f.combatRemoved then
-                    f:SetAlpha(0.25)
-                    f.icon:SetDesaturated(true)
-                    f.cd:Clear()
-                    f.count:SetText("")
+                    drawInactive(f)
                 elseif f.castAt then
                     -- We saw ourselves cast it this fight (onPlayerCast). Start
                     -- time is our own clock and the length is one we measured
                     -- out of combat, so neither number is secret.
+                    f.inactive = false
                     f:SetAlpha(0.85)
                     f.icon:SetDesaturated(false)
                     if learned then f.cd:SetCooldown(f.castAt, learned) else f.cd:Clear() end
                     f.count:SetText("")
                 elseif f.auraInstanceID then
+                    f.inactive = false
                     f:SetAlpha(0.85)              -- known before combat, unverifiable now
                     f.icon:SetDesaturated(false)
                     f.count:SetText("")
                 else
+                    f.inactive = false
                     f:SetAlpha(0.6)
                     f.icon:SetDesaturated(false)
                     f.cd:Clear()
@@ -432,13 +485,72 @@ local function updateBuffs()
                 f.combatRemoved = nil
                 f.auraInstanceID = nil
                 f.castAt = nil
-                f:SetAlpha(0.25)
-                f.icon:SetDesaturated(true)
-                f.cd:Clear()
-                f.count:SetText("")
+                drawInactive(f)
             end
         end
     end
+    packRow("buffs")
+end
+
+-- Debuffs bar: YOUR debuffs on your current target (Serpent Sting, Hunter's
+-- Mark...). Same honesty rules as the Buffs bar: read the aura when the client
+-- allows it; when it does not, fall back to our own cast event plus a known
+-- duration, remembered per target so swapping back to a mob restores its timer.
+local function targetKey()
+    if not (UnitExists and UnitExists("target")) then return nil end
+    local guid = UnitGUID and UnitGUID("target")
+    if guid == nil or secret(guid) then return "?" end   -- unreadable GUID: all targets share one slot
+    return guid
+end
+
+-- Returns the aura (or nil), and whether the target's debuffs could be read at all.
+local function findTargetDebuff(id)
+    if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return nil, false end
+    local name = spellName(id)             -- by name too: each rank is its own spellID
+    local readable = true
+    for i = 1, 40 do
+        local ok, a = pcall(C_UnitAuras.GetAuraDataByIndex, "target", i, "HARMFUL|PLAYER")
+        if not ok then return nil, false end
+        if a == nil then break end
+        if secret(a) or (issecrettable and issecrettable(a)) or secret(a.spellId) then
+            readable = false
+        elseif a.spellId == id or (not secret(a.name) and a.name == name) then
+            return a, true
+        end
+    end
+    return nil, readable
+end
+
+local function updateDebuffs()
+    local tkey = targetKey()
+    for _, f in ipairs(icons.debuffs) do
+        if f:IsShown() and f.spellID then
+            f.casts = f.casts or {}
+            local a, readable = nil, true
+            if tkey then a, readable = findTargetDebuff(f.spellID) end
+            if a then
+                f.casts[tkey] = nil        -- real aura data beats our cast-based estimate
+                drawAura(f, "target", a)
+            else
+                local castAt = tkey and not readable and f.casts[tkey] or nil
+                local learned = auraDuration(f.spellID)
+                if castAt and learned and GetTime() > castAt + learned then
+                    f.casts[tkey] = nil    -- our own timer says it ran out
+                    castAt = nil
+                end
+                if castAt then
+                    f.inactive = false
+                    f:SetAlpha(0.85)       -- we cast it on this target; unverifiable right now
+                    f.icon:SetDesaturated(false)
+                    if learned then f.cd:SetCooldown(castAt, learned) else f.cd:Clear() end
+                    f.count:SetText("")
+                else
+                    drawInactive(f)
+                end
+            end
+        end
+    end
+    packRow("debuffs")
 end
 
 -- UNIT_AURA carries an updateInfo payload (addedAuras / updatedAuraInstanceIDs /
@@ -514,6 +626,21 @@ local function onPlayerCast(unit, _, spellID)
             end
         end
     end
+    local tkey = targetKey()
+    if not tkey then return end
+    for _, f in ipairs(icons.debuffs) do
+        if f.spellID then
+            local hit = f.spellID == spellID
+            if not hit then
+                castName = castName or spellName(spellID)
+                hit = castName == spellName(f.spellID)
+            end
+            if hit then
+                f.casts = f.casts or {}
+                f.casts[tkey] = GetTime()
+            end
+        end
+    end
 end
 
 local function refreshAll()
@@ -524,6 +651,7 @@ local function refreshAll()
     updateCooldowns("cds")
     updateCooldowns("utilities")
     updateBuffs()
+    updateDebuffs()
     persistSoon()      -- every settings change funnels through here
 end
 
@@ -615,21 +743,24 @@ local function encodeSettings(withDurations)
     put("L", db.locked and "1" or "0")
     put("hr", db.hideReady and "1" or "0")
     put("sn", db.showNames and "1" or "0")
+    put("hi", db.hideInactive and "1" or "0")
     put("mm", string.format("%d,%s", math.floor((db.minimap.angle or 215) + 0.5), db.minimap.hide and "1" or "0"))
     local sz, gp = {}, {}
     for i, key in ipairs(BAR_KEYS) do sz[i], gp[i] = db.rowSize[key], db.rowSpacing[key] end
     put("sz", table.concat(sz, ","))
     put("gp", table.concat(gp, ","))
     for _, key in ipairs(BAR_KEYS) do
-        local tag = key:sub(1, 1)                  -- c, u, b
+        local tag = key:sub(1, 1)                  -- c, u, b, d (so "id"/"pd"; a bare "d" is the durations)
         put("i" .. tag, table.concat(db[key], ","))
         local p = db.pos[key]
         put("p" .. tag, string.format("%s,%.1f,%.1f", tostring(p[1]), p[2] or 0, p[3] or 0))
     end
     if withDurations then
         local dur = {}
-        for _, id in ipairs(db.buffs) do
-            if db.buffDurations[id] then dur[#dur + 1] = id .. ":" .. string.format("%.1f", db.buffDurations[id]) end
+        for _, key in ipairs({ "buffs", "debuffs" }) do
+            for _, id in ipairs(db[key]) do
+                if db.buffDurations[id] then dur[#dur + 1] = id .. ":" .. string.format("%.1f", db.buffDurations[id]) end
+            end
         end
         put("d", table.concat(dur, ","))
     end
@@ -648,6 +779,7 @@ local function applySettings(s)
     db.locked = t.L ~= "0"
     db.hideReady = t.hr == "1"
     db.showNames = t.sn == "1"
+    db.hideInactive = t.hi == "1"
     local angle, hide = (t.mm or ""):match("^(-?%d+),(%d)$")
     if angle then db.minimap.angle, db.minimap.hide = tonumber(angle), hide == "1" end
     local sz, gp = nums(t.sz), nums(t.gp)
@@ -832,10 +964,12 @@ ev:SetScript("OnEvent", function(self, event, ...)
         newRow("cds", "Cooldowns")
         newRow("utilities", "Utilities")
         newRow("buffs", "Buffs")
+        newRow("debuffs", "Debuffs")
         refreshAll()
         self:RegisterEvent("SPELL_UPDATE_COOLDOWN")
         self:RegisterEvent("SPELL_UPDATE_CHARGES")
-        self:RegisterUnitEvent("UNIT_AURA", "player")
+        self:RegisterUnitEvent("UNIT_AURA", "player", "target")
+        self:RegisterEvent("PLAYER_TARGET_CHANGED")
         self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         self:RegisterEvent("SPELLS_CHANGED")
         self:RegisterEvent("PLAYER_LOGOUT")
@@ -853,9 +987,13 @@ ev:SetScript("OnEvent", function(self, event, ...)
     elseif event == "UNIT_AURA" then
         onAuraEvent(...)
         updateBuffs()
+        updateDebuffs()
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        updateDebuffs()
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         onPlayerCast(...)
         updateBuffs()
+        updateDebuffs()
     elseif event == "PLAYER_LOGOUT" then
         writeMirror()        -- flush anything still waiting on the debounce
     elseif event == "GET_ITEM_INFO_RECEIVED" then
@@ -872,6 +1010,8 @@ ev:SetScript("OnEvent", function(self, event, ...)
     elseif event == "PLAYER_REGEN_ENABLED" then
         if mirror.deleteAfterCombat then mirror.deleteAfterCombat = nil deleteMirror() end
         if mirror.afterCombat then mirror.afterCombat = nil writeMirror() end
+        for _, f in ipairs(icons.debuffs) do f.casts = nil end    -- auras are readable again; drop the estimates
+        updateDebuffs()
     elseif event == "SPELLS_CHANGED" then
         buildRankIndex()
         refreshAll()
@@ -883,7 +1023,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
 end)
 
 -- Light periodic refresh so buff swipes stay honest across secret transitions.
-C_Timer.NewTicker(0.5, function() if db then updateBuffs() end end)
+C_Timer.NewTicker(0.5, function() if db then updateBuffs() updateDebuffs() end end)
 
 -- Slash ------------------------------------------------------------------------------
 
@@ -891,12 +1031,15 @@ local HELP = {
     "/fcdm add <spell>       add a spell cooldown icon (name as in spellbook, or spellID)",
     "/fcdm add item:<id>     add an item: trinket, potion, bandage... (item name or a pasted link also work)",
     "/fcdm addbuff <spell>   watch a buff on yourself (shows bright while active)",
+    "/fcdm adddebuff <spell> watch your own debuff on your target (Serpent Sting...)",
     "/fcdm addutility <spell> add a spell to the Utility row",
     "/fcdm remove <spell>    remove from all rows",
     "/fcdm auto              add every spellbook spell that has a cooldown",
     "/fcdm list              show what is tracked",
     "/fcdm unlock | lock     drag the rows, then lock",
-    "/fcdm size [bar] <px>   icon size, all bars or one of cds|utility|buffs. Same for /fcdm spacing",
+    "/fcdm size [bar] <px>   icon size, all bars or one of cds|utility|buffs|debuffs. Same for /fcdm spacing",
+    "/fcdm hideinactive on|off  hide buff and debuff icons until the aura is up (off: they stay dimmed)",
+    "/fcdm duration <spell> <sec>  set how long a buff or debuff lasts, if the addon could not work it out",
     "/fcdm mirror [on|off]   keep settings in a macro, because the beta client forgets them on restart",
     "/fcdm hideready on|off  hide cooldown icons while ready",
     "/fcdm names on|off      show spell names under icons",
@@ -911,15 +1054,15 @@ SlashCmdList.FOREVERCDM = function(msg)
     cmd = strlower(cmd or "")
     if not db then say("not loaded yet.") return end
 
-    if cmd == "add" or cmd == "addbuff" or cmd == "addutility" then
+    if cmd == "add" or cmd == "addbuff" or cmd == "addutility" or cmd == "adddebuff" then
         local id = resolveSpell(rest)
         if not id then say("no spell called \"%s\". Use the name from your spellbook, or a spellID.", rest) return end
-        local key = cmd == "add" and "cds" or cmd == "addutility" and "utilities" or "buffs"
-        if id < 0 and key == "buffs" then say("items go on the Cooldowns or Utility bar; the Buffs bar watches auras.") return end
+        local key = cmd == "add" and "cds" or cmd == "addutility" and "utilities" or cmd == "adddebuff" and "debuffs" or "buffs"
+        if id < 0 and (key == "buffs" or key == "debuffs") then say("items go on the Cooldowns or Utility bar; the Buffs and Debuffs bars watch auras.") return end
         if contains(db[key], id) then say("%s is already tracked.", spellName(id)) return end
         db[key][#db[key] + 1] = id
         refreshAll()
-        say("added %s to %s.", spellName(id), key == "cds" and "Cooldowns" or key == "utilities" and "Utility" or "Buffs")
+        say("added %s to %s.", spellName(id), BAR_LABEL[key])
 
     elseif cmd == "remove" or cmd == "rem" or cmd == "del" then
         local id = resolveSpell(rest)
@@ -940,7 +1083,7 @@ SlashCmdList.FOREVERCDM = function(msg)
         for _, key in ipairs(BAR_KEYS) do
             local names = {}
             for _, id in ipairs(db[key]) do names[#names + 1] = spellName(id) end
-            say("%s: %s", key == "cds" and "Cooldowns" or key == "utilities" and "Utility" or "Buffs", #names > 0 and table.concat(names, ", ") or "none")
+            say("%s: %s", BAR_LABEL[key], #names > 0 and table.concat(names, ", ") or "none")
         end
 
     elseif cmd == "unlock" or cmd == "lock" then
@@ -955,10 +1098,10 @@ SlashCmdList.FOREVERCDM = function(msg)
         local which, value = rest:match("^(%a+)%s+(%-?%d+)$")
         local n = tonumber(value or rest)
         local alias = { cds = "cds", cd = "cds", cooldowns = "cds", utility = "utilities", utilities = "utilities",
-                        util = "utilities", buffs = "buffs", buff = "buffs" }
+                        util = "utilities", buffs = "buffs", buff = "buffs", debuffs = "debuffs", debuff = "debuffs" }
         local key = which and alias[strlower(which)]
         if not n or (which and not key) then
-            say("usage: /fcdm %s [cds|utility|buffs] <pixels>", cmd)
+            say("usage: /fcdm %s [cds|utility|buffs|debuffs] <pixels>", cmd)
             return
         end
         n = math.max(cmd == "size" and 12 or 0, math.min(cmd == "size" and 96 or 30, n))
@@ -984,12 +1127,21 @@ SlashCmdList.FOREVERCDM = function(msg)
         -- What the settings macro runs if someone clicks it.
         say("this macro holds your Forever Cooldown Manager setup, because the beta client forgets addon settings. It is read automatically at login; clicking it does nothing. Turn it off with /fcdm mirror off.")
 
-    elseif cmd == "hideready" or cmd == "names" then
+    elseif cmd == "hideready" or cmd == "names" or cmd == "hideinactive" then
         local on = rest == "on" or rest == "1" or rest == "true"
-        if cmd == "hideready" then db.hideReady = on else db.showNames = on end
+        if cmd == "hideready" then db.hideReady = on elseif cmd == "names" then db.showNames = on else db.hideInactive = on end
         for _, f in ipairs(icons.cds) do f:SetAlpha(1) end
         refreshAll()
+        if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
         say("%s %s.", cmd, on and "on" or "off")
+
+    elseif cmd == "duration" then
+        local which, sec = rest:match("^(.-)%s+(%d+%.?%d*)$")
+        local id = which and resolveSpell(which)
+        if not id or id < 0 then say("usage: /fcdm duration <spell> <seconds>") return end
+        db.buffDurations[id] = tonumber(sec)
+        refreshAll()
+        say("%s lasts %s seconds.", spellName(id), sec)
 
     elseif cmd == "probe" then
         -- What does each aura lookup return for this spell RIGHT NOW? Run it

@@ -10,8 +10,10 @@ it shows nothing. ForeverCDM reads your spellbook and your auras directly and dr
 **Author:** Thunderz · **Interface:** 16001 (Forever beta)
 
 ## What it does
-- Three icon rows: **Cooldowns**, **Utilities**, **Buffs**. Cooldown rows show Blizzard's swipe and
-  charge counts; the Buffs row shows chosen auras while they are on you, with a remaining-time swipe.
+- Four icon rows: **Cooldowns**, **Utilities**, **Buffs**, **Debuffs**. Cooldown rows show Blizzard's
+  swipe and charge counts; the Buffs row shows chosen auras while they are on you, and the Debuffs row
+  shows your own debuffs on your target (Serpent Sting, Rend...), each with a remaining-time swipe.
+- Auras that are not up can stay dimmed on the bar, or be hidden until they happen (good for procs).
 - Display only. It never casts and never makes decisions, so it stays inside the current addon rules.
 - Reads nothing it is not allowed to: secret timings are handed to the cooldown widget as duration
   objects, and in combat, where the client hides aura data from addons entirely, a buff that was up
@@ -32,6 +34,7 @@ lua tests/test_secret_duration.lua ForeverCDM.lua
 lua tests/test_runtime.lua
 lua tests/test_cast_tracking.lua
 lua tests/test_persist.lua
+lua tests/test_debuffs.lua
 ```
 Releases are built by the GitHub Actions workflow on any `v*` tag. Findings about the Forever client
 that shaped this addon live in [forever-addon-kit](https://github.com/Thunderz96/forever-addon-kit).

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 (2026-09-20)
+- **Debuffs bar.** A fourth row for your own debuffs on your current target: Serpent Sting,
+  Hunter's Mark, Rend, Corruption... Tick the new DEBUFF box in the Spellbook card, or
+  `/fcdm adddebuff Serpent Sting`. Any rank of the spell lights the icon.
+- In combat, where the client hides auras from addons, the timer runs from your own cast and is
+  remembered per target, so swapping back to a mob brings its timer back. A cast that misses or is
+  resisted still starts the timer; the real aura replaces it whenever it can be read.
+- If the addon cannot work out how long a debuff lasts, `/fcdm duration <spell> <seconds>` sets it.
+- **Hide inactive auras** (Settings card, or `/fcdm hideinactive on`). Off, as before, a buff that is
+  not up stays on its bar dimmed. On, buffs and debuffs only appear while they are up, so a proc
+  shows when it happens, and the visible icons close the gaps. Unlocking the rows shows everything
+  again so there is something to drag.
+- Each icon in the Bars card has an **x** to remove it, so a spell added by a mistyped ID is easy to
+  get rid of.
+
 ## 0.5.0 (2026-09-18)
 - **Items on your bars.** Trinkets, potions, bandages, engineering gadgets: anything with a Use
   effect. The Spellbook card has a new Items group listing every usable item you are wearing or
