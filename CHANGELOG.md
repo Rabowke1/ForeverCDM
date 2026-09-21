@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Confirm row attachment/detachment in chat, list only visible anchor targets, and
+  distinguish duplicate menu labels. Skip hidden or unreadable visibility results
+  safely in both the anchor menu and snapping.
 - Respect Edit Mode's Enable Snap setting: show alignment guides while dragging,
   snap nearby centres/edges on drop, and hold Shift to bypass. Existing frame
   anchors retain the corrected offset.

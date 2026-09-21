@@ -275,10 +275,16 @@ local function snapTargets(key)
     return targets
 end
 
+local function frameVisible(frame)
+    local check = frame and (frame.IsVisible or frame.IsShown)
+    if not check then return false end
+    local ok, visible = pcall(check, frame)
+    -- A successful API call can still return a secret boolean. Do not test it.
+    return ok and not secret(visible) and visible == true
+end
+
 local function snapRect(frame)
-    if frame.IsVisible then
-        if not frame:IsVisible() then return end
-    elseif not frame:IsShown() then return end
+    if not frameVisible(frame) then return end
     local x, y = frameCenter(frame)
     if not x then return end
     local w, h = frame:GetWidth(), frame:GetHeight()
@@ -383,7 +389,7 @@ local function stopRowDrag(key)
     applyPosition(key)
 end
 
-local function setRowAnchor(key, name)
+local function setRowAnchor(key, name, label)
     if not rows[key] or (InCombatLockdown and InCombatLockdown()) then return false end
     local target = name and anchorTarget(key, name)
     if name and not target then
@@ -401,6 +407,11 @@ local function setRowAnchor(key, name)
     db.anchors[key] = name and { name, x - tx, y - ty } or nil
     applyPosition(key)
     persistSoon()
+    if name then
+        say("%s attached to %s.", rows[key].title, label or name)
+    else
+        say("%s detached from its anchor.", rows[key].title)
+    end
     return true
 end
 
@@ -419,12 +430,14 @@ local function showAnchorMenu(key)
         end
         root:CreateRadio("Screen (detach)", function() return selected(nil) end,
             function() setRowAnchor(key, nil) end)
-        local candidates, added = {}, {}
+        local candidates, added, labels = {}, {}, {}
         local function add(frame, label)
             local name = frame and frame.GetName and frame:GetName()
-            if name and frame ~= UIParent and not added[name] and anchorTarget(key, name) then
+            if name and frame ~= UIParent and not added[name] and frameVisible(frame) and anchorTarget(key, name) then
                 added[name] = true
-                candidates[#candidates + 1] = { name = name, label = label or name }
+                label = label or name
+                labels[label] = (labels[label] or 0) + 1
+                candidates[#candidates + 1] = { name = name, label = label }
             end
         end
         for _, otherKey in ipairs(BAR_KEYS) do add(rows[otherKey], "Forever CDM: " .. rows[otherKey].title) end
@@ -434,11 +447,16 @@ local function showAnchorMenu(key)
         end
         local a = db.anchors[key]
         if a then add(_G[a[1]]) end
+        for _, candidate in ipairs(candidates) do
+            if labels[candidate.label] > 1 then
+                candidate.label = candidate.label .. " (" .. candidate.name .. ")"
+            end
+        end
         table.sort(candidates, function(a, b) return a.label < b.label end)
         for _, candidate in ipairs(candidates) do
-            local name = candidate.name
-            root:CreateRadio(candidate.label, function() return selected(name) end,
-                function() setRowAnchor(key, name) end)
+            local name, label = candidate.name, candidate.label
+            root:CreateRadio(label, function() return selected(name) end,
+                function() setRowAnchor(key, name, label) end)
         end
     end)
 end

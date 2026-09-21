@@ -32,6 +32,8 @@ still work for moving rows outside Edit Mode. Handles are disabled during combat
 or another ForeverCDM row. The row stays in place when attached, then follows that
 frame as it moves. Drag the row to adjust its offset. Choose **Screen (detach)** to
 return to a fixed screen position without moving it. Circular anchors are excluded.
+The menu lists only currently visible targets; attach and detach actions print a
+confirmation in chat. Duplicate target labels include their global frame names.
 For a named frame not listed in the menu, use `/fcdm anchor buffs FrameName`
 (replace `buffs` with `cds` or `utilities` as needed); `/fcdm anchor buffs none` detaches.
 If the target is unavailable at login, the row uses its saved screen position and

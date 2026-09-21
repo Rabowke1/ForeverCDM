@@ -460,10 +460,38 @@ if EventRegistry then
     row.scripts.OnMouseUp(row, 'RightButton')
     assert(menu['Player Frame'] and menu['Forever CDM: Buffs'], 'anchor menu missing native/addon frames')
     assert(not menu['Forever CDM: Cooldowns'], 'menu offered a self anchor')
+    local originalPrint, messages = print, {}
+    print = function(message) messages[#messages + 1] = message end
     menu['Player Frame'].choose()
     assert(menu['Player Frame'].selected() and row.point[2] == target, 'menu did not attach')
+    assert(messages[#messages]:find('Cooldowns attached to Player Frame.', 1, true), 'missing attach confirmation')
     menu['Screen (detach)'].choose()
     assert(menu['Screen (detach)'].selected() and row.point[2] == UIParent, 'menu did not detach')
+    assert(messages[#messages]:find('Cooldowns detached', 1, true), 'missing detach confirmation')
+    print = originalPrint
+
+    local hidden = object('Frame', 'TestHiddenTarget', UIParent)
+    hidden:Hide()
+    local blocked = object('Frame', 'TestBlockedTarget', UIParent)
+    blocked.IsVisible = function() error('visibility blocked') end
+    local secretTarget = object('Frame', 'TestSecretTarget', UIParent)
+    local secretValue, oldSecret = {}, issecretvalue
+    secretTarget.IsVisible = function() return secretValue end
+    issecretvalue = function(value) return value == secretValue end
+    local duplicate = object('Frame', 'TestDuplicateTarget', UIParent)
+    duplicate.GetSystemName = function() return 'Player Frame' end
+    EditModeManagerFrame.registeredSystemFrames = {target, hidden, blocked, secretTarget, duplicate}
+    row.scripts.OnMouseUp(row, 'RightButton')
+    assert(not menu.TestHiddenTarget and not menu.TestBlockedTarget and not menu.TestSecretTarget,
+        'menu included hidden or unreadable targets')
+    assert(menu['Player Frame (TestPlayerFrame)'] and menu['Player Frame (TestDuplicateTarget)'],
+        'duplicate labels were not distinguished')
+    SlashCmdList.FOREVERCDM('anchor cds TestHiddenTarget')
+    assert(ForeverCDMDB.anchors.cds[1] == 'TestHiddenTarget', 'slash command rejected a hidden target')
+    row.scripts.OnMouseUp(row, 'RightButton')
+    assert(not menu.TestHiddenTarget and menu['Screen (detach)'], 'hidden saved target leaked into menu')
+    menu['Screen (detach)'].choose()
+    issecretvalue = oldSecret
     callbacks['EditMode.Exit']()
     menu = nil
     row.scripts.OnMouseUp(row, 'RightButton')
@@ -533,6 +561,19 @@ if EventRegistry then
     dragAt(205, 245)
     dropAt(205, 245)
     target:Show()
+
+    target.IsVisible = function() error('visibility blocked') end
+    dragAt(205, 245)
+    dropAt(205, 245)
+    local secretValue, oldSecret = {}, issecretvalue
+    issecretvalue = function(value) return value == secretValue end
+    target.IsVisible = function() return secretValue end
+    dragAt(205, 245)
+    dropAt(205, 245)
+    issecretvalue = oldSecret
+    target.IsVisible = function(self) return self:IsShown() end
+    dragAt(205, 245)
+    dropAt(200, 240) -- readable visibility restores snapping
 
     -- Snapping an attached row updates its offset without changing its target.
     SlashCmdList.FOREVERCDM('anchor cds TestSnapFrame')
