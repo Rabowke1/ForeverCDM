@@ -839,9 +839,17 @@ local function updateDebuffs()
             local a, readable = nil, true
             if tkey then a, readable = findTargetDebuff(f.spellID) end
             if a then
-                f.casts[tkey] = nil        -- real aura data beats our cast-based estimate
+                -- Keep a start time for this target. Hunter's Mark goes up BEFORE
+                -- the pull: the aura is readable then and unreadable once combat
+                -- starts, so a real start time is what carries the timer across.
+                if not secret(a.duration) and not secret(a.expirationTime) and (a.duration or 0) > 0 then
+                    f.casts[tkey] = a.expirationTime - a.duration
+                end
                 drawAura(f, "target", a)
             else
+                -- Readable and absent: it really dropped, unless the cast was a moment
+                -- ago and the aura has not landed yet (application lags the cast event).
+                if readable and tkey and f.casts[tkey] and GetTime() - f.casts[tkey] > 1 then f.casts[tkey] = nil end
                 local castAt = tkey and not readable and f.casts[tkey] or nil
                 local learned = auraDuration(f.spellID)
                 if castAt and learned and GetTime() > castAt + learned then
@@ -1536,6 +1544,27 @@ SlashCmdList.FOREVERCDM = function(msg)
                 if type(data) == "table" and not secret(data.spellId) and data.spellId == id then hit = data end
             end, true)
             say("  ForEachAura HELPFUL -> ok=%s walked=%d match=%s", tostring(okW), n, hit and desc(hit) or tostring(okW and "none" or errW):sub(1, 120))
+        end
+        -- The target's side, for the Debuffs bar.
+        if UnitExists and UnitExists("target") and C_UnitAuras.GetAuraDataByIndex then
+            local walked, hit, firstErr = 0, nil, nil
+            for i = 1, 40 do
+                local okD, d = pcall(C_UnitAuras.GetAuraDataByIndex, "target", i, "HARMFUL|PLAYER")
+                if not okD then firstErr = tostring(d):sub(1, 100) break end
+                if d == nil then break end
+                walked = walked + 1
+                if type(d) == "table" and not (issecrettable and issecrettable(d)) and not secret(d.spellId)
+                    and (d.spellId == id or d.name == spellName(id)) then hit = d end
+            end
+            local okT, tSecret = pcall(function() return C_Secrets and C_Secrets.ShouldAurasBeSecret and C_Secrets.ShouldAurasBeSecret("target") end)
+            say("  target HARMFUL|PLAYER -> walked=%d match=%s err=%s targetSecret=%s", walked, hit and desc(hit) or "none", tostring(firstErr), tostring(okT and tSecret))
+            local f
+            for _, icon in ipairs(icons.debuffs) do if icon.spellID == id then f = icon end end
+            local tk = targetKey()
+            say("  debuff icon: %s | estimate for this target=%s | duration=%s", f and "tracked" or "not on the Debuffs bar",
+                tostring(f and f.casts and tk and f.casts[tk]), tostring(auraDuration(id)))
+        else
+            say("  no target, so nothing to say about the Debuffs bar.")
         end
 
     elseif cmd == "minimap" then

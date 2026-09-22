@@ -145,7 +145,39 @@ ForeverCDM_SetLocked(true)
 SlashCmdList.FOREVERCDM('hideinactive off')
 assert(mark.alpha == 0.25 and mark.x == 0 and sting.x > 0, 'turning the option off should restore dim icons in list order')
 
--- 10. /fcdm duration sets a length by hand.
+-- 10. Hunter's Mark pattern: applied BEFORE the pull (readable), then combat locks
+--     aura reads. The timer must carry across on the real start time, not vanish.
+now = 2000
+target = 'mob-D'
+mobDebuffs['mob-D'] = { { spellId = MARK, name = "Hunter's Mark", duration = 120, expirationTime = 2110, auraInstanceID = 9 } }
+fire('PLAYER_TARGET_CHANGED')
+assert(mark.alpha == 1 and mark.cd.cdStart == 1990, 'readable mark should draw from its real start')
+locked = true
+fire('UNIT_AURA', 'target', nil)
+assert(mark.alpha == 0.85 and mark.cd.cdStart == 1990 and mark.cd.cdDur == 120, 'a pre-pull debuff must keep its timer once combat hides auras')
+locked = false
+mobDebuffs['mob-D'] = {}
+fire('UNIT_AURA', 'target', nil)
+assert(mark.alpha == 0.25, 'readable and absent means it really dropped')
+locked = true
+fire('UNIT_AURA', 'target', nil)
+assert(mark.alpha == 0.25, 'a dropped debuff must not come back when combat starts')
+locked = false
+
+-- 11. Opener: Serpent Sting cast while auras are still readable, the aura lands a
+--     moment later, and combat locks reads. The fresh estimate must survive.
+now = 3000
+target = 'mob-E'
+mobDebuffs['mob-E'] = {}
+fire('PLAYER_TARGET_CHANGED')
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', STING)   -- readable, aura not applied yet
+assert(sting.alpha == 0.25, 'readable and absent right after the cast: not lit yet')
+now = 3000.2
+locked = true
+fire('UNIT_AURA', 'target', nil)
+assert(sting.alpha == 0.85 and sting.cd.cdStart == 3000, 'the opener estimate must not be discarded before the aura lands')
+
+-- 12. /fcdm duration sets a length by hand.
 SlashCmdList.FOREVERCDM("duration Hunter's Mark 120")
 assert(ForeverCDMDB.buffDurations[MARK] == 120, '/fcdm duration did not store the length')
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1 (2026-09-21)
+- **Debuffs applied before the pull now keep their timer in combat.** Hunter's Mark (and anything
+  else you put on a mob before engaging) was readable out of combat, so the addon dropped its own
+  estimate, then had nothing left once combat hid the aura. The real start time is kept per target
+  instead.
+- **Openers are tracked.** A debuff cast while the target's auras were still readable (the first
+  Serpent Sting of a fight) was cleared before the aura had landed. A fresh cast now gets a second
+  to land.
+- `/fcdm probe <spell>` also reports what the addon can see on your target.
+
 ## 0.7.0 (2026-09-21)
 - **Edit Mode support** (contributed by shuyu42, PR #1):
 - Confirm row attachment/detachment in chat, list only visible anchor targets, and
