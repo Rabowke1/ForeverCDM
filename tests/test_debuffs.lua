@@ -21,6 +21,11 @@ for _, name in ipairs({ 'SetTexCoord', 'ClearAllPoints', 'SetMovable', 'SetClamp
     'SetColorTexture', 'RegisterForDrag', 'SetTexture', 'EnableMouse' }) do methods[name] = noop end
 function methods:SetSize(w, h) self.width, self.height = w, h end
 function methods:GetWidth() return self.width or 100 end
+-- frame geometry the Edit Mode anchoring code reads; this harness does not test it
+function methods:GetEffectiveScale() return 1 end
+function methods:GetCenter() return 0, 0 end
+function methods:GetNumPoints() return 0 end
+function methods:IsShown() return true end
 function methods:SetText(t) self.textValue = t end
 function methods:SetAlpha(a) self.alpha = a end
 function methods:SetPoint(_, _, _, x) self.x = x end          -- remember the horizontal offset

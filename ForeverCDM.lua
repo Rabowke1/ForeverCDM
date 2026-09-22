@@ -44,6 +44,7 @@ local BAR_KEYS = { "cds", "utilities", "buffs", "debuffs" }
 local BAR_LABEL = { cds = "Cooldowns", utilities = "Utility", buffs = "Buffs", debuffs = "Debuffs" }
 local persistSoon        -- defined in the settings-mirror section; called wherever settings change
 local lateMirror         -- defined just above the event frame
+local editModeActive = false
 
 local function say(fmt, ...) print(NAME .. ": " .. string.format(fmt, ...)) end
 
@@ -68,6 +69,7 @@ local function ensureDB()
     end
     -- Migration for existing profiles: never replace existing ordered lists or positions.
     db.utilities = db.utilities or {}
+    db.anchors = db.anchors or {} -- key -> { globally named frame, x, y }, offsets in UIParent units
     db.pos.utilities = db.pos.utilities or { "CENTER", 0, -220 }
     db.debuffs = db.debuffs or {}
     db.pos.debuffs = db.pos.debuffs or { "CENTER", 0, -320 }
@@ -133,6 +135,22 @@ end
 
 -- Icon frames -------------------------------------------------------------------
 
+local function canMoveRows()
+    return (editModeActive or not db.locked) and not (InCombatLockdown and InCombatLockdown())
+end
+
+local function updateRowInteraction(key)
+    local row = rows[key]
+    local movable = canMoveRows()
+    row:EnableMouse(movable)
+    row.bg:SetShown(movable)
+    row.label:SetShown(movable)
+    row.label:SetText("Forever CDM: " .. row.title .. (editModeActive
+        and "  (drag; right-click to anchor)" or "  (drag; /fcdm lock when done)"))
+    -- Empty bars still need a handle in Edit Mode.
+    if movable and row:GetWidth() < 40 then row:SetSize(40, db.rowSize[key]) end
+end
+
 local function newIcon(parent)
     local f = CreateFrame("Frame", nil, parent)
     f.icon = f:CreateTexture(nil, "ARTWORK")
@@ -176,19 +194,311 @@ local function layoutRow(key)
     end
     for i = #list + 1, #icons[key] do icons[key][i]:Hide() end
     row:SetSize(math.max(shown, 1) * (size + gap) - gap, size)
-    row.label:SetShown(not db.locked)
+    updateRowInteraction(key)
+end
+
+local function frameCenter(frame)
+    if not frame or not frame.GetCenter or not frame.GetEffectiveScale then return end
+    local ok, x, y = pcall(frame.GetCenter, frame)
+    if not ok or secret(x) or secret(y) or type(x) ~= "number" or type(y) ~= "number" then return end
+    local scale = frame:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    return x * scale, y * scale
+end
+
+local function anchorTarget(key, name)
+    if type(name) ~= "string" or not name:match("^[%a_][%w_]*$") then return end
+    local target = _G[name]
+    if (type(target) ~= "table" and type(target) ~= "userdata")
+        or not target.IsObjectType or not target:IsObjectType("Frame") then return end
+    -- Check both live anchor/parent dependencies and saved row targets. The
+    -- latter matter while a frame is still loading or temporarily being dragged.
+    local seen, count = {}, 0
+    local function dependsOnRow(frame)
+        if frame == rows[key] then return true end
+        if not frame or frame == UIParent or seen[frame] then return false end
+        seen[frame] = true
+        count = count + 1
+        if count > 100 then return true end -- refuse an unexpectedly deep graph
+        for otherKey, otherRow in pairs(rows) do
+            local a = db.anchors[otherKey]
+            if frame == otherRow and a and dependsOnRow(_G[a[1]]) then return true end
+        end
+        if frame.GetParent and dependsOnRow(frame:GetParent()) then return true end
+        for i = 1, (frame.GetNumPoints and frame:GetNumPoints() or 0) do
+            local _, relativeTo = frame:GetPoint(i)
+            if dependsOnRow(relativeTo) then return true end
+        end
+        return false
+    end
+    local ok, cyclic = pcall(dependsOnRow, target)
+    if ok and not cyclic then return target end
 end
 
 local function applyPosition(key)
     local row = rows[key]
+    if row.dragging then return end
+    local a = db.anchors[key]
+    local target = a and anchorTarget(key, a[1])
     local p = db.pos[key]
     row:ClearAllPoints()
-    row:SetPoint(p[1], UIParent, p[1], p[2], p[3])
+    local scale = row:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    -- A missing or circular target uses the last screen position without losing
+    -- the saved target. A later addon load can resolve it again.
+    if target then
+        row:SetPoint("CENTER", target, "CENTER", a[2] / scale, a[3] / scale)
+    else
+        row:SetPoint(p[1], UIParent, p[1], p[2] / scale, p[3] / scale)
+    end
+    row.pendingAnchor = a and not target or nil
+end
+
+local function saveRowPosition(key)
+    local x, y = frameCenter(rows[key])
+    local parentX, parentY = frameCenter(UIParent)
+    if not x or not parentX then return false end
+    db.pos[key] = { "CENTER", x - parentX, y - parentY }
+    local a = db.anchors[key]
+    local targetX, targetY = frameCenter(a and anchorTarget(key, a[1]))
+    if targetX then a[2], a[3] = x - targetX, y - targetY end
+    return true
+end
+
+-- Preview alignment while the game's normal drag moves the row. Apply the
+-- correction only on drop, so snapping never fights StartMoving or traps the
+-- cursor. All geometry and the 10-pixel tolerance use UIParent coordinates.
+local function snapTargets(key)
+    local targets, seen = {}, {}
+    local function add(frame)
+        local name = frame and frame.GetName and frame:GetName()
+        if name and not seen[name] and frame ~= UIParent and anchorTarget(key, name) then
+            seen[name] = true
+            targets[#targets + 1] = frame
+        end
+    end
+    local a = db.anchors[key]
+    if a then add(_G[a[1]]) end -- prefer the existing anchor when distances tie
+    for _, otherKey in ipairs(BAR_KEYS) do add(rows[otherKey]) end
+    local manager = EditModeManagerFrame
+    for _, frame in ipairs(manager and manager.registeredSystemFrames or {}) do add(frame) end
+    return targets
+end
+
+local function frameVisible(frame)
+    local check = frame and (frame.IsVisible or frame.IsShown)
+    if not check then return false end
+    local ok, visible = pcall(check, frame)
+    -- A successful API call can still return a secret boolean. Do not test it.
+    return ok and not secret(visible) and visible == true
+end
+
+local function snapRect(frame)
+    if not frameVisible(frame) then return end
+    local x, y = frameCenter(frame)
+    if not x then return end
+    local w, h = frame:GetWidth(), frame:GetHeight()
+    if secret(w) or secret(h) or type(w) ~= "number" or type(h) ~= "number" or w <= 0 or h <= 0 then return end
+    local scale = frame:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    return { x = x, y = y, w = w * scale, h = h * scale }
+end
+
+local SNAP_POINTS = {{0, 0}, {-0.5, -0.5}, {0.5, 0.5}, {-0.5, 0.5}, {0.5, -0.5}}
+
+local function snapPosition(key)
+    local row, manager = rows[key], EditModeManagerFrame
+    if not editModeActive or not canMoveRows() or (IsShiftKeyDown and IsShiftKeyDown())
+        or not manager or not manager.IsSnapEnabled or not manager:IsSnapEnabled() then return end
+    local rect = snapRect(row)
+    if not rect then return end
+    local dx, dy, guideX, guideY
+    for _, target in ipairs(row.snapTargets or {}) do
+        local other = snapRect(target)
+        -- Only nearby frames should attract the row, not a matching edge across
+        -- the screen. Allow adjacent edges as well as overlapping rectangles.
+        if other and math.abs(rect.x - other.x) <= (rect.w + other.w) / 2 + 24
+            and math.abs(rect.y - other.y) <= (rect.h + other.h) / 2 + 24 then
+            for _, pair in ipairs(SNAP_POINTS) do
+                local x = other.x + pair[2] * other.w
+                local deltaX = x - (rect.x + pair[1] * rect.w)
+                if math.abs(deltaX) <= 10 and (not dx or math.abs(deltaX) < math.abs(dx)) then
+                    dx = deltaX
+                    guideX = { x, math.min(rect.y - rect.h / 2, other.y - other.h / 2),
+                        math.max(rect.y + rect.h / 2, other.y + other.h / 2) }
+                end
+                local y = other.y + pair[2] * other.h
+                local deltaY = y - (rect.y + pair[1] * rect.h)
+                if math.abs(deltaY) <= 10 and (not dy or math.abs(deltaY) < math.abs(dy)) then
+                    dy = deltaY
+                    guideY = { y, math.min(rect.x - rect.w / 2, other.x - other.w / 2),
+                        math.max(rect.x + rect.w / 2, other.x + other.w / 2) }
+                end
+            end
+        end
+    end
+    return rect.x + (dx or 0), rect.y + (dy or 0), guideX, guideY
+end
+
+local function hideSnapGuides(row)
+    if row.snapGuides then for _, guide in ipairs(row.snapGuides) do guide:Hide() end end
+end
+
+local function previewSnap(key)
+    local row = rows[key]
+    hideSnapGuides(row)
+    local _, _, gx, gy = snapPosition(key)
+    if not gx and not gy then return end
+    if not row.snapGuides then
+        row.snapGuides = {}
+        for i = 1, 2 do
+            local guide = row:CreateTexture(nil, "OVERLAY")
+            guide:SetColorTexture(0.2, 0.85, 1, 0.9)
+            guide:Hide()
+            row.snapGuides[i] = guide
+        end
+    end
+    local px, py = frameCenter(UIParent)
+    if not px then return end
+    local scale = row:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    if gx then
+        local guide = row.snapGuides[1]
+        guide:ClearAllPoints()
+        guide:SetPoint("BOTTOM", UIParent, "CENTER", (gx[1] - px) / scale, (gx[2] - py) / scale)
+        guide:SetSize(2 / scale, math.max(2, gx[3] - gx[2]) / scale)
+        guide:Show()
+    end
+    if gy then
+        local guide = row.snapGuides[2]
+        guide:ClearAllPoints()
+        guide:SetPoint("LEFT", UIParent, "CENTER", (gy[2] - px) / scale, (gy[1] - py) / scale)
+        guide:SetSize(math.max(2, gy[3] - gy[2]) / scale, 2 / scale)
+        guide:Show()
+    end
+end
+
+local function stopRowDrag(key)
+    local row = rows[key]
+    if not row.dragging then return end
+    row:StopMovingOrSizing()
+    local x, y, gx, gy = snapPosition(key)
+    if gx or gy then
+        local px, py = frameCenter(UIParent)
+        local scale = row:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        if px then
+            row:ClearAllPoints()
+            row:SetPoint("CENTER", UIParent, "CENTER", (x - px) / scale, (y - py) / scale)
+        end
+    end
+    row:SetScript("OnUpdate", nil)
+    hideSnapGuides(row)
+    row.snapTargets = nil
+    row.dragging = nil
+    -- StartMoving can change the relative frame/anchor. Store a UIParent-centred
+    -- position in UIParent units so reloads and different UI scales agree.
+    if saveRowPosition(key) then persistSoon() end
+    applyPosition(key)
+end
+
+local function setRowAnchor(key, name, label)
+    if not rows[key] or (InCombatLockdown and InCombatLockdown()) then return false end
+    local target = name and anchorTarget(key, name)
+    if name and not target then
+        say("cannot anchor to that frame (missing, invalid, or circular anchor).")
+        return false
+    end
+    stopRowDrag(key)
+    local x, y = frameCenter(rows[key])
+    local tx, ty = frameCenter(target or UIParent)
+    if not x or not tx then
+        say("that frame has no readable position yet.")
+        return false
+    end
+    saveRowPosition(key)
+    db.anchors[key] = name and { name, x - tx, y - ty } or nil
+    applyPosition(key)
+    persistSoon()
+    if name then
+        say("%s attached to %s.", rows[key].title, label or name)
+    else
+        say("%s detached from its anchor.", rows[key].title)
+    end
+    return true
+end
+
+local function showAnchorMenu(key)
+    if not editModeActive or not canMoveRows() then return end
+    if not (MenuUtil and MenuUtil.CreateContextMenu) then
+        say("use /fcdm anchor %s <FrameName> or /fcdm anchor %s none.", key, key)
+        return
+    end
+    MenuUtil.CreateContextMenu(rows[key], function(_, root)
+        root:CreateTitle("Forever CDM: " .. rows[key].title)
+        root:CreateTitle("Positions save immediately")
+        local function selected(name)
+            local a = db.anchors[key]
+            return (a and a[1] or nil) == name
+        end
+        root:CreateRadio("Screen (detach)", function() return selected(nil) end,
+            function() setRowAnchor(key, nil) end)
+        local candidates, added, labels = {}, {}, {}
+        local function add(frame, label)
+            local name = frame and frame.GetName and frame:GetName()
+            if name and frame ~= UIParent and not added[name] and frameVisible(frame) and anchorTarget(key, name) then
+                added[name] = true
+                label = label or name
+                labels[label] = (labels[label] or 0) + 1
+                candidates[#candidates + 1] = { name = name, label = label }
+            end
+        end
+        for _, otherKey in ipairs(BAR_KEYS) do add(rows[otherKey], "Forever CDM: " .. rows[otherKey].title) end
+        local manager = EditModeManagerFrame
+        for _, frame in pairs(manager and manager.registeredSystemFrames or {}) do
+            add(frame, frame.GetSystemName and frame:GetSystemName())
+        end
+        local a = db.anchors[key]
+        if a then add(_G[a[1]]) end
+        for _, candidate in ipairs(candidates) do
+            if labels[candidate.label] > 1 then
+                candidate.label = candidate.label .. " (" .. candidate.name .. ")"
+            end
+        end
+        table.sort(candidates, function(a, b) return a.label < b.label end)
+        for _, candidate in ipairs(candidates) do
+            local name, label = candidate.name, candidate.label
+            root:CreateRadio(label, function() return selected(name) end,
+                function() setRowAnchor(key, name, label) end)
+        end
+    end)
+end
+
+local function updateRowInteractions(stopDragging)
+    for _, key in ipairs(BAR_KEYS) do
+        if stopDragging then stopRowDrag(key) end
+        updateRowInteraction(key)
+    end
+end
+
+local function initEditMode()
+    -- Subscribe without registering addon frames as Blizzard systems or writing
+    -- into the manager's protected layout tables. This also works if Edit Mode
+    -- loads after PLAYER_LOGIN. Older clients keep the manual unlock controls.
+    if not (EventRegistry and EventRegistry.RegisterCallback) then return end
+    EventRegistry:RegisterCallback("EditMode.Enter", function()
+        editModeActive = true
+        updateRowInteractions(true)
+    end, rows)
+    EventRegistry:RegisterCallback("EditMode.Exit", function()
+        editModeActive = false
+        updateRowInteractions(true)
+    end, rows)
+    if EditModeManagerFrame and EditModeManagerFrame.IsEditModeActive then
+        editModeActive = EditModeManagerFrame:IsEditModeActive() and true or false
+        updateRowInteractions(false)
+    end
 end
 
 local function newRow(key, label)
     local rowName = key == "utilities" and "ForeverCDM_utility" or "ForeverCDM_" .. key
     local row = CreateFrame("Frame", rowName, UIParent)
+    row.title = label
     row:SetSize(40, 40)
     row:SetMovable(true)
     row:SetClampedToScreen(true)
@@ -199,14 +509,20 @@ local function newRow(key, label)
     row.bg:Hide()
     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     row.label:SetPoint("BOTTOM", row, "TOP", 0, 2)
-    row.label:SetText(label .. "  (drag; /fcdm lock when done)")
     row:RegisterForDrag("LeftButton")
-    row:SetScript("OnDragStart", function(self) if not db.locked then self:StartMoving() end end)
-    row:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        local point, _, _, x, y = self:GetPoint(1)
-        db.pos[key] = { point, x, y }
-        persistSoon()
+    row:SetScript("OnDragStart", function(self)
+        if canMoveRows() then
+            self:StartMoving()
+            self.dragging = true
+            if editModeActive then
+                self.snapTargets = snapTargets(key)
+                self:SetScript("OnUpdate", function() previewSnap(key) end)
+            end
+        end
+    end)
+    row:SetScript("OnDragStop", function() stopRowDrag(key) end)
+    row:SetScript("OnMouseUp", function(_, button)
+        if button == "RightButton" then showAnchorMenu(key) end
     end)
     rows[key] = row
     return row
@@ -214,13 +530,7 @@ end
 
 function ForeverCDM_SetLocked(locked)
     db.locked = locked
-    for key, row in pairs(rows) do
-        row:EnableMouse(not locked)
-        row.bg:SetShown(not locked)
-        row.label:SetShown(not locked)
-        -- an empty row still needs something to grab
-        if not locked and row:GetWidth() < 40 then row:SetSize(40, db.rowSize[key]) end
-    end
+    updateRowInteractions(true)
     persistSoon()
 end
 
@@ -754,6 +1064,8 @@ local function encodeSettings(withDurations)
         put("i" .. tag, table.concat(db[key], ","))
         local p = db.pos[key]
         put("p" .. tag, string.format("%s,%.1f,%.1f", tostring(p[1]), p[2] or 0, p[3] or 0))
+        local a = db.anchors[key]
+        if a then put("a" .. tag, string.format("%s,%.1f,%.1f", a[1], a[2], a[3])) end
     end
     if withDurations then
         local dur = {}
@@ -790,6 +1102,9 @@ local function applySettings(s)
         if t["i" .. tag] then db[key] = nums(t["i" .. tag]) end
         local point, x, y = (t["p" .. tag] or ""):match("^(%a+),(-?[%d%.]+),(-?[%d%.]+)$")
         if point then db.pos[key] = { point, tonumber(x), tonumber(y) } end
+        local target, ax, ay = (t["a" .. tag] or ""):match("^([%a_][%w_]*),(-?[%d%.]+),(-?[%d%.]+)$")
+        ax, ay = tonumber(ax), tonumber(ay)
+        db.anchors[key] = target and ax and ay and { target, ax, ay } or nil
     end
     for id, dur in (t.d or ""):gmatch("(%d+):([%d%.]+)") do
         db.buffDurations[tonumber(id)] = tonumber(dur)
@@ -966,6 +1281,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         newRow("buffs", "Buffs")
         newRow("debuffs", "Debuffs")
         refreshAll()
+        initEditMode()
         self:RegisterEvent("SPELL_UPDATE_COOLDOWN")
         self:RegisterEvent("SPELL_UPDATE_CHARGES")
         self:RegisterUnitEvent("UNIT_AURA", "player", "target")
@@ -978,6 +1294,9 @@ ev:SetScript("OnEvent", function(self, event, ...)
             pcall(self.RegisterEvent, self, e)
         end
         self:RegisterEvent("PLAYER_REGEN_ENABLED")
+        self:RegisterEvent("PLAYER_REGEN_DISABLED")
+        self:RegisterEvent("ADDON_LOADED")
+        self:RegisterEvent("PLAYER_ENTERING_WORLD")
         -- Still waiting for the macro list: UPDATE_MACROS will say when it has
         -- arrived. The timer only covers a client where that event never fires.
         if not mirror.ready and C_Timer and C_Timer.After then C_Timer.After(15, function() lateMirror(true) end) end
@@ -1007,11 +1326,19 @@ ev:SetScript("OnEvent", function(self, event, ...)
     elseif event == "UPDATE_MACROS" then
         mirror.macrosSeen = true
         if db then lateMirror(true) end
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        updateRowInteractions(true)
     elseif event == "PLAYER_REGEN_ENABLED" then
+        for _, key in ipairs(BAR_KEYS) do if rows[key].pendingAnchor then applyPosition(key) end end
+        updateRowInteractions(false)
         if mirror.deleteAfterCombat then mirror.deleteAfterCombat = nil deleteMirror() end
         if mirror.afterCombat then mirror.afterCombat = nil writeMirror() end
         for _, f in ipairs(icons.debuffs) do f.casts = nil end    -- auras are readable again; drop the estimates
         updateDebuffs()
+    elseif event == "ADDON_LOADED" or event == "PLAYER_ENTERING_WORLD" then
+        if not (InCombatLockdown and InCombatLockdown()) then
+            for _, key in ipairs(BAR_KEYS) do if rows[key].pendingAnchor then applyPosition(key) end end
+        end
     elseif event == "SPELLS_CHANGED" then
         buildRankIndex()
         refreshAll()
@@ -1028,6 +1355,9 @@ C_Timer.NewTicker(0.5, function() if db then updateBuffs() updateDebuffs() end e
 -- Slash ------------------------------------------------------------------------------
 
 local HELP = {
+    "Game Menu > Edit Mode  drag row handles; positions save immediately on drop",
+    "Right-click a row in Edit Mode to attach it to another frame",
+    "/fcdm anchor <cds|utilities|buffs> <FrameName|none>  attach or detach a row",
     "/fcdm add <spell>       add a spell cooldown icon (name as in spellbook, or spellID)",
     "/fcdm add item:<id>     add an item: trinket, potion, bandage... (item name or a pasted link also work)",
     "/fcdm addbuff <spell>   watch a buff on yourself (shows bright while active)",
@@ -1086,6 +1416,14 @@ SlashCmdList.FOREVERCDM = function(msg)
             say("%s: %s", BAR_LABEL[key], #names > 0 and table.concat(names, ", ") or "none")
         end
 
+    elseif cmd == "anchor" then
+        local key, name = rest:match("^(%a+)%s+(%S+)$")
+        if key == "utility" then key = "utilities" end
+        if not key or not rows[key] or not name then
+            say("usage: /fcdm anchor <cds|utilities|buffs> <FrameName|none>")
+        else
+            setRowAnchor(key, name ~= "none" and name or nil)
+        end
     elseif cmd == "unlock" or cmd == "lock" then
         ForeverCDM_SetLocked(cmd == "lock")
         say(db.locked and "locked." or "unlocked: drag the orange rows, then /fcdm lock.")

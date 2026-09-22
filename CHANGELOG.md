@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+- Confirm row attachment/detachment in chat, list only visible anchor targets, and
+  distinguish duplicate menu labels. Skip hidden or unreadable visibility results
+  safely in both the anchor menu and snapping.
+- Respect Edit Mode's Enable Snap setting: show alignment guides while dragging,
+  snap nearby centres/edges on drop, and hold Shift to bypass. Existing frame
+  anchors retain the corrected offset.
+- Right-click a row handle in Edit Mode to anchor it to a Blizzard frame or another
+  addon row. Preserve offsets while dragging, allow detaching, reject circular
+  anchors, and restore frame targets through saved settings and the settings macro.
+- Show draggable handles for all three rows in the game's Edit Mode, including empty
+  and locked rows. Keep the normal lock preference and disable dragging in combat.
+- Save dropped positions in UIParent coordinates and retain the existing settings
+  macro support. Row positions remain shared across Blizzard layouts and save on drop.
+
 ## 0.6.0 (2026-09-20)
 - **Debuffs bar.** A fourth row for your own debuffs on your current target: Serpent Sting,
   Hunter's Mark, Rend, Corruption... Tick the new DEBUFF box in the Spellbook card, or
