@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-09-21)
+- **Edit Mode support** (contributed by shuyu42, PR #1):
 - Confirm row attachment/detachment in chat, list only visible anchor targets, and
   distinguish duplicate menu labels. Skip hidden or unreadable visibility results
   safely in both the anchor menu and snapping.
@@ -10,7 +11,7 @@
 - Right-click a row handle in Edit Mode to anchor it to a Blizzard frame or another
   addon row. Preserve offsets while dragging, allow detaching, reject circular
   anchors, and restore frame targets through saved settings and the settings macro.
-- Show draggable handles for all three rows in the game's Edit Mode, including empty
+- Show draggable handles for all four rows in the game's Edit Mode, including empty
   and locked rows. Keep the normal lock preference and disable dragging in combat.
 - Save dropped positions in UIParent coordinates and retain the existing settings
   macro support. Row positions remain shared across Blizzard layouts and save on drop.
