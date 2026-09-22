@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- Add named tracking profiles with automatic saving and create/copy/switch/rename/delete
+  controls. Migrate existing lists to Default and include profiles in the optional
+  macro backup; row layout and appearance remain shared.
+
 ## 0.7.1 (2026-09-21)
 - **Debuffs applied before the pull now keep their timer in combat.** Hunter's Mark (and anything
   else you put on a mob before engaging) was readable out of combat, so the addon dropped its own

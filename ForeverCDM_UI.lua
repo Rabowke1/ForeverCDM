@@ -46,7 +46,7 @@ local function outline(frame, c, a)
     strip("TOPRIGHT", "BOTTOMRIGHT", false)
 end
 
-local MIRROR_WHY = "The beta client forgets addon settings when the game restarts. This saves your setup in one general macro and reads it back at login."
+local MIRROR_WHY = "Beta restart backup: up to three macros. Large profile collections may not fit. /fcdm mirror shows backup status."
 
 local function text(parent, font, str, c)
     local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -339,6 +339,7 @@ end
 
 refreshList = function()
     local d = db()
+    if win.profileButton then win.profileButton:SetText("Profile: " .. d.activeProfile) end
     local spells = spellbookSpells()
     local content = win.content
     local y, heads, lastTab = 0, 0, nil
@@ -412,7 +413,7 @@ end
 
 local function build()
     win = CreateFrame("Frame", "ForeverCDMConfig", UIParent)
-    win:SetSize(880, 580)
+    win:SetSize(880, 620)
     win:SetPoint("CENTER")
     win:SetFrameStrata("DIALOG")
     win:SetToplevel(true)
@@ -445,7 +446,43 @@ local function build()
     local close = flatButton(head, "x", 24, 24, function() win:Hide() end)
     close:SetPoint("RIGHT", -8, 1)
 
-    local TOP, BOTTOM = -52, 34
+    win.profileButton = flatButton(win, "Profile", 220, 24, function(self)
+        if not (MenuUtil and MenuUtil.CreateContextMenu) then
+            print("|cffd2621fForever CDM|r: /fcdm profile use <name> switches profiles.")
+            return
+        end
+        MenuUtil.CreateContextMenu(self, function(_, root)
+            root:CreateTitle("Tracked cooldowns, utilities, buffs and debuffs")
+            for _, profileName in ipairs(CDM.ProfileNames()) do
+                local name = profileName
+                root:CreateRadio(name, function() return db().activeProfile == name end,
+                    function() CDM.Profile("use", name) end)
+            end
+        end)
+    end)
+    win.profileButton:SetPoint("TOPLEFT", 14, -50)
+    local profileName = CreateFrame("EditBox", "ForeverCDMProfileName", win)
+    profileName:SetSize(210, 24)
+    profileName:SetPoint("TOPLEFT", 244, -50)
+    profileName:SetFontObject("ChatFontNormal")
+    profileName:SetTextInsets(6, 6, 0, 0)
+    profileName:SetAutoFocus(false)
+    fill(profileName, "BACKGROUND", BG)
+    outline(profileName, LINE)
+    profileName:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    profileName:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    local profileHint = text(win, "GameFontDisableSmall", "Name for New / Copy / Rename / Delete; edits save automatically. Layout is shared.")
+    profileHint:SetPoint("TOPLEFT", 244, -77)
+    for i, entry in ipairs({{"New", "new"}, {"Copy", "copy"}, {"Rename", "rename"}, {"Delete", "delete"}}) do
+        local action = entry[2]
+        local button = flatButton(win, entry[1], 90, 24, function()
+            if CDM.Profile(action, profileName:GetText()) then profileName:SetText("") end
+            profileName:ClearFocus()
+        end)
+        button:SetPoint("TOPLEFT", 464 + (i - 1) * 100, -50)
+    end
+
+    local TOP, BOTTOM = -92, 34
 
     -- left: spellbook
     local book = card(win, "SPELLBOOK", 14, 420, TOP, BOTTOM)

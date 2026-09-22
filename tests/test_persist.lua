@@ -249,6 +249,51 @@ assert(#db.cds == 0 and not said('restored'), 'unrecognised macro contents were 
 slash('store 1/1 anything')
 assert(said('clicking it does nothing'), 'the macro click handler is missing')
 
+-- Profiles survive real SavedVariables and the beta's macro-only cold start.
+macros = {}
+db = session({cds = {101, -6948}, buffs = {201}, utilities = {103}, debuffs = {301}})
+assert(db.activeProfile == 'Default' and db.profiles.Default.cds[2] == -6948, 'legacy lists were not migrated')
+slash('profile copy Raid;50%~')
+slash('add 102')
+assert(#db.profiles.Default.cds == 2, 'copy shares mutable lists')
+slash('profile new Empty')
+assert(#db.cds == 0 and #db.buffs == 0 and #db.utilities == 0 and #db.debuffs == 0, 'new profile is not empty')
+slash('profile use Default')
+slash('mirror on')
+db = session(nil)
+assert(db.activeProfile == 'Default' and db.cds[2] == -6948, 'active default not restored')
+assert(db.profiles.Empty and #db.profiles.Empty.cds == 0, 'empty profile lost')
+slash('profile use Raid;50%~')
+assert(db.cds[3] == 102 and db.buffs[1] == 201 and db.debuffs[1] == 301, 'inactive profile or escaped name lost')
+db = session(nil)
+assert(db.activeProfile == 'Raid;50%~' and db.cds[3] == 102, 'active profile name lost')
+slash('profile rename Solo')
+assert(not db.profiles['Raid;50%~'] and db.profiles.Solo, 'rename failed')
+slash('profile delete Solo')
+assert(db.profiles.Solo, 'deleted active profile')
+slash('profile delete Empty')
+assert(not db.profiles.Empty, 'delete failed')
+inCombat = true
+slash('profile use Default')
+assert(db.activeProfile == 'Solo', 'switched in combat')
+inCombat = false
+db = session(db)
+assert(db.activeProfile == 'Solo' and db.cds[3] == 102 and db.profiles.Default, 'SavedVariables profile restart failed')
+slash('profile new Solo')
+assert(db.cds[3] == 102, 'duplicate name overwrote profile')
+slash('profile new   ')
+assert(db.activeProfile == 'Solo', 'empty name accepted')
+-- Capacity failures retain the previous complete backup, including profiles.
+slash('profile new Large')
+for i = 1, 200 do db.cds[i] = 100000 + i end
+ForeverCDM.Refresh()
+runTimers()
+slash('mirror')
+assert(said('settings too large'), 'oversized profiles were not reported')
+-- The empty Large profile was saved before it grew; it is the last complete copy.
+db = session(nil)
+assert(db.profiles.Solo and db.profiles.Default and #db.cds == 0, 'overflow damaged last complete backup')
+
 -- 13. A client without the macro API: everything still loads.
 local savedCreateMacro = CreateMacro
 CreateMacro = nil
