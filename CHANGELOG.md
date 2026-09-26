@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-09-26)
 - **Each character keeps its own tracked spells.** Saved settings are shared by every character
   on the account, so once the beta started loading them a paladin could open on a hunter's bars.
   The lists now live in profiles, and each character uses its own, named after it
@@ -21,6 +21,13 @@
   character uses. This character's own setup is always written while it fits on its own.
 - `/fcdm reset` resets the shared layout and this character's lists; other characters' profiles
   are kept.
+- **Combine icons into one** (requested on CurseForge). On the Buffs and Debuffs bars, the + button
+  in the Bars card joins an icon to the one above. A combined icon is lit by whichever of its spells
+  is up and dims when none is: all your seals in one place, or your auras, aspects, stings or armors.
+  In combat the last one you cast takes the icon, so a new seal replaces the old one there too.
+- **Fade out of combat** (requested on CurseForge). Settings, "Out of combat": show, fade or hide the
+  bars. They come back in combat and while you target an enemy, and stay visible while the rows are
+  unlocked. `/fcdm fade show|fade|hide` does the same.
 
 ## 0.7.1 (2026-09-21)
 - **Debuffs applied before the pull now keep their timer in combat.** Hunter's Mark (and anything
