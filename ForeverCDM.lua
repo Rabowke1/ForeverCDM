@@ -53,24 +53,42 @@ local function secret(v) return issecretvalue and issecretvalue(v) end
 -- Settings ------------------------------------------------------------------
 -- Tracked lists belong to a character. They are kept in named profiles
 -- (db.profiles, one pool per account) and db.profileKeys says which profile
--- each character uses, keyed "Name - Realm". A character that has not picked
--- one gets its own, named after it. Layout, appearance and learned durations
--- are shared by every character.
+-- each character uses, keyed by the character's GUID. A character that has
+-- not picked one gets its own, named "Name (Class) - Realm". Layout,
+-- appearance and learned durations are shared by every character.
 --
 -- WHY: SavedVariables are per account. While the beta never loaded them, each
 -- character's own settings macro brought back its lists, so the setup was per
 -- character by accident. Once the saved table did load, every character got
 -- the lists of whoever played last (a paladin opening on a hunter's spells).
+-- Name and realm cannot tell characters apart: on Forever two characters can
+-- share a first name on one realm (measured 2026-09-25: a hunter and a paladin
+-- both answer UnitName "Thunderz" on "Classic Beta PvE 2"). The GUID can.
 --
 -- db.cds / .utilities / .buffs / .debuffs are the working copy of this
 -- character's profile. Everything else reads those; saveProfile() writes them
 -- back on every change.
 
-local resolved = false   -- has this character's profile been decided? (resolveCharacter)
-local legacyLists        -- the loaded pre-profile list tables, kept aside until claimed
+local resolved = false               -- has this character's profile been decided? (resolveCharacter)
+local legacyLists, legacyListsName   -- the loaded pre-profile list tables and their profile, kept aside until claimed
 
+local function playerGUID()
+    local g = UnitGUID and UnitGUID("player")
+    if type(g) == "string" and g ~= "" and not secret(g) then return g end
+end
+
+-- The key this character's choice of profile is stored under: its GUID. Only a
+-- client that gives no GUID falls back to name and realm.
 local function charKey()
-    return tostring(UnitName and UnitName("player") or "?") .. " - " .. tostring(GetRealmName and GetRealmName() or "?")
+    return playerGUID() or (tostring(UnitName and UnitName("player") or "?") .. " - " .. tostring(GetRealmName and GetRealmName() or "?"))
+end
+
+-- This character as the player reads it in the profile menu.
+local function charLabel()
+    local name = tostring(UnitName and UnitName("player") or "?")
+    local class = UnitClass and UnitClass("player")
+    if type(class) == "string" and class ~= "" and not secret(class) then name = name .. " (" .. class .. ")" end
+    return name .. " - " .. tostring(GetRealmName and GetRealmName() or "?")
 end
 
 local function activeName()
@@ -94,6 +112,20 @@ local function loadProfile(name)
     for _, key in ipairs(BAR_KEYS) do db[key] = { unpack(db.profiles[name][key] or {}) } end
     db.profileKeys[charKey()] = name
     resolved = true
+end
+
+-- The name for this character's own profile: its label, numbered when another
+-- character already uses that name (two characters can share name and class).
+local function ownProfileName()
+    local base, me = charLabel(), charKey()
+    local name, n = base, 1
+    while true do
+        local taken = db.legacyProfiles[name]
+        for who, p in pairs(db.profileKeys) do if p == name and who ~= me then taken = true end end
+        if not taken then return name end
+        n = n + 1
+        name = base .. " " .. n
+    end
 end
 
 local function ensureDB()
@@ -131,11 +163,28 @@ local function ensureDB()
     local hadProfiles = db.profiles ~= nil
     db.profiles = db.profiles or {}
     db.profileKeys = db.profileKeys or {}
-    if db.activeProfile and db.profiles[db.activeProfile] and not next(db.profileKeys) then
-        db.legacyProfile = db.legacyProfile or db.activeProfile   -- a test build kept one choice for the whole account
+    db.legacyProfiles = db.legacyProfiles or {}   -- profiles whose owner is not known yet (resolveCharacter)
+    db.charLabels = db.charLabels or {}           -- GUID -> label, for messages about other characters
+    if db.legacyProfile then db.legacyProfiles[db.legacyProfile] = true end   -- test builds: one owner-less profile,
+    if db.activeProfile and not next(db.profileKeys) then                     -- or one choice for the whole account
+        db.legacyProfiles[db.activeProfile] = true
     end
-    db.activeProfile = nil
-    resolved, legacyLists = false, nil
+    db.legacyProfile, db.activeProfile = nil, nil
+    -- A key by name and realm (a test build) may belong to either of two
+    -- characters that share a first name. Only GUID keys are trusted: the
+    -- profile behind any other key waits for its owner.
+    if playerGUID() then
+        for key, pname in pairs(db.profileKeys) do
+            if not key:find("^Player%-") then
+                db.profileKeys[key] = nil
+                db.legacyProfiles[pname] = true
+            end
+        end
+        db.charLabels[charKey()] = charLabel()
+    end
+    for pname in pairs(db.legacyProfiles) do if not db.profiles[pname] then db.legacyProfiles[pname] = nil end end
+    for _, pname in pairs(db.profileKeys) do db.legacyProfiles[pname] = nil end    -- in use, so not owner-less
+    resolved, legacyLists, legacyListsName = false, nil, nil
     local name = activeName()
     if name and db.profiles[name] then
         loadProfile(name)
@@ -148,8 +197,8 @@ local function ensureDB()
         for _, key in ipairs(BAR_KEYS) do if #db[key] > 0 then any = true end end
         if not hadProfiles and any then
             db.profiles.Default = copyLists(db)
-            db.legacyProfile = "Default"
-            legacyLists = {}
+            db.legacyProfiles.Default = true
+            legacyLists, legacyListsName = {}, "Default"
             for _, key in ipairs(BAR_KEYS) do legacyLists[key] = db[key] end
         end
         for _, key in ipairs(BAR_KEYS) do db[key] = {} end
@@ -1118,13 +1167,21 @@ local MIRROR_ICON = "INV_Misc_Gear_01"
 local mirror = { hadSV = false, found = 0, restored = false, ready = false, wrote = 0, note = "nothing written yet" }
 local mirrorDirty, hinted, loginHinted = false, false, false
 
-local function mirrorName(i)
-    -- hashed so any character name, in any alphabet, gives a short plain macro name (16 character limit)
-    local who = tostring(UnitName and UnitName("player") or "") .. "-" .. tostring(GetRealmName and GetRealmName() or "")
+-- Macro names hash who the macro belongs to, so any name in any alphabet gives
+-- a short plain name (16 character limit). Since 0.8.0 that is the GUID; before,
+-- it was name and realm, which two characters can share.
+local function macroName(who, i)
     local h = 5381
     for c = 1, #who do h = (h * 33 + who:byte(c)) % 2147483647 end
     return string.format("FCDM%08x%d", h, i)
 end
+
+local function nameWho()
+    return tostring(UnitName and UnitName("player") or "") .. "-" .. tostring(GetRealmName and GetRealmName() or "")
+end
+
+local function mirrorName(i) return macroName(playerGUID() or nameWho(), i) end
+local function oldMirrorName(i) return macroName(nameWho(), i) end
 
 local function macroAPI()
     return CreateMacro and EditMacro and DeleteMacro and GetMacroBody and GetMacroIndexByName and true or false
@@ -1147,7 +1204,7 @@ local function encodeSettings(withDurations, withProfiles)
     -- profile means exactly that, so the name is only written when it differs.
     -- Keeps an existing setup in as few macros as before profiles.
     local active = activeName()
-    if active and active ~= charKey() then put("pn", encodeProfileName(active)) end
+    if active and active ~= charLabel() then put("pn", encodeProfileName(active)) end
     if withProfiles then
         -- A profile some character uses travels in that character's own macro.
         -- Profiles nobody uses ride along here, while they fit.
@@ -1243,12 +1300,12 @@ local function applySettings(s, full)
     return true, t.pn and t.pn ~= "" and decodeProfileName(t.pn) or nil
 end
 
--- The stored string, or nil. Each macro body is "/fcdm store <i>/<n> <data>".
-local function readMirror()
-    if not macroAPI() then return nil end
+-- The string stored in the macros that nameAt(i) names, or nil. Each macro
+-- body is "/fcdm store <i>/<n> <data>".
+local function readChunks(nameAt)
     local parts, total = {}, nil
     for i = 1, MIRROR_MACROS do
-        local ok, index = pcall(GetMacroIndexByName, mirrorName(i))
+        local ok, index = pcall(GetMacroIndexByName, nameAt(i))
         if not ok or not index or index == 0 then break end
         local okB, body = pcall(GetMacroBody, index)
         local n, of, data = (okB and body or ""):match("^/fcdm store (%d+)/(%d+) (.*)$")
@@ -1261,12 +1318,30 @@ local function readMirror()
     return table.concat(parts)
 end
 
-local function deleteMirror()
-    if not macroAPI() then return end
+-- This character's stored string, and whether it came from macros named the
+-- pre-0.8.0 way, whose owner still has to be checked (mirrorLogin).
+local function readMirror()
+    if not macroAPI() then return nil end
+    local s = readChunks(mirrorName)
+    if s then return s, false end
+    if oldMirrorName(1) ~= mirrorName(1) then
+        s = readChunks(oldMirrorName)
+        if s then return s, true end
+    end
+    return nil
+end
+
+local function deleteMacros(nameAt)
     for i = MIRROR_MACROS, 1, -1 do
-        local ok, index = pcall(GetMacroIndexByName, mirrorName(i))
+        local ok, index = pcall(GetMacroIndexByName, nameAt(i))
         if ok and index and index > 0 then pcall(DeleteMacro, index) end
     end
+end
+
+local function deleteMirror()
+    if not macroAPI() then return end
+    deleteMacros(mirrorName)
+    if mirror.fromOld then deleteMacros(oldMirrorName) mirror.fromOld = nil end
 end
 
 local function writeMirror()
@@ -1308,6 +1383,10 @@ local function writeMirror()
         elseif index > 0 then
             pcall(DeleteMacro, index)      -- a shorter save needs fewer macros
         end
+    end
+    if mirror.fromOld then            -- now in this character's own macro, so the old-style one can go
+        deleteMacros(oldMirrorName)
+        mirror.fromOld = nil
     end
     mirror.wrote = #s
     mirror.note = #s .. " characters in " .. n .. (n == 1 and " macro" or " macros") .. (dropped and "; unused profiles left out" or "")
@@ -1381,29 +1460,39 @@ local function sameLists(a, b)
     return true
 end
 
--- This character takes the unclaimed pre-profile lists, renamed after it.
--- keepWorking: the working lists already hold them (they came from its macro).
-local function claimLegacy(keepWorking)
-    local me, old = charKey(), db.legacyProfile
-    local name = db.profiles[me] and old or me
-    db.profiles[name], db.legacyProfile = db.profiles[old], nil
+-- Owner-less profiles still waiting for their character, sorted.
+local function legacyNames()
+    local t = {}
+    for name in pairs(db.legacyProfiles) do if db.profiles[name] then t[#t + 1] = name end end
+    table.sort(t)
+    return t
+end
+
+-- This character takes an owner-less profile, renamed after it.
+-- keepWorking: the working lists already hold it (they came from its macro).
+local function claimLegacy(old, keepWorking)
+    db.legacyProfiles[old] = nil
+    local name = ownProfileName()
+    if db.profiles[name] and name ~= old then name = old end   -- keep the old name if ours is somehow in use
+    db.profiles[name] = db.profiles[old]
     if name ~= old then db.profiles[old] = nil end
-    db.profileKeys[me] = name
+    db.profileKeys[charKey()] = name
     if not keepWorking then
-        if legacyLists then
+        if legacyLists and old == legacyListsName then
             for _, key in ipairs(BAR_KEYS) do db[key] = legacyLists[key] end   -- the very tables that were loaded
         else
             for _, key in ipairs(BAR_KEYS) do db[key] = { unpack(db.profiles[name][key] or {}) } end
         end
     end
-    legacyLists, resolved = nil, true
+    legacyLists, legacyListsName, resolved = nil, nil, true
 end
 
--- The profile this character's macro recorded. Macros older than profiles
--- record none: their lists are simply this character's own.
+-- The profile this character's macro recorded. Macros that record none mean
+-- the character's own profile.
 local function adoptProfile(name)
-    local legacy = db.legacyProfile and db.profiles[db.legacyProfile]
-    if legacy and sameLists(legacy, db) then claimLegacy(true) return end   -- the pre-profile lists were this character's
+    for _, old in ipairs(legacyNames()) do       -- an owner-less profile with exactly these lists was this character's
+        if sameLists(db.profiles[old], db) then claimLegacy(old, true) return end
+    end
     if mirror.hadSV and db.profiles[name] then loadProfile(name) return end  -- the loaded settings hold it, and are newer
     db.profiles[name] = copyLists(db)
     db.profileKeys[charKey()] = name
@@ -1411,38 +1500,57 @@ local function adoptProfile(name)
 end
 
 -- Which profile does this character use, when the loaded settings had none for
--- it and its macro did not say? The one named after it; else the pre-profile
--- lists if they are its spells; else a fresh one of its own. Waits for the
--- macro list and the spellbook (force: stop waiting for the spellbook), so it
--- never guesses early and never shows another character's spells meanwhile.
+-- it and its macro did not say? Its own; else an owner-less profile whose
+-- spells are its; else a fresh one of its own. Waits for the macro list and
+-- the spellbook (force: stop waiting for the spellbook), so it never guesses
+-- early and never shows another character's spells meanwhile.
 local function resolveCharacter(force)
     if resolved or not db or not mirror.ready then return end
-    local me = charKey()
-    if db.profiles[me] then loadProfile(me) return end
-    local legacyName = db.legacyProfile
-    local legacy = legacyName and db.profiles[legacyName]
-    if legacy then
-        local mine = ownsLists(legacy)
-        if mine == nil and not force then return end        -- SPELLS_CHANGED asks again
-        if mine then claimLegacy(false) return end
+    local own = ownProfileName()
+    if db.profiles[own] then loadProfile(own) return end
+    local waiting, left = false, nil
+    for _, old in ipairs(legacyNames()) do
+        local mine = ownsLists(db.profiles[old])
+        if mine then claimLegacy(old, false) return end
+        if mine == nil then waiting = true end
+        left = left or old
     end
+    if waiting and not force then return end        -- the spellbook has not loaded: SPELLS_CHANGED asks again
     local others = next(db.profiles) ~= nil
-    db.profiles[me] = copyLists(db)          -- empty, or whatever was ticked while this was waiting
-    db.profileKeys[me] = me
+    db.profiles[own] = copyLists(db)          -- empty, or whatever was ticked while this was waiting
+    db.profileKeys[charKey()] = own
     resolved = true
-    if legacy then
-        say("each character now keeps its own tracked spells. This one starts empty; your earlier setup is kept as the profile \"%s\" (/fcdm, Profile).", legacyName)
+    if left then
+        say("each character now keeps its own tracked spells. This one starts empty; the setup saved before is kept as the profile \"%s\" (/fcdm, Profile).", left)
     elseif others then
-        say("this character now has its own profile, \"%s\", starting empty. /fcdm (Profile) can switch it to another.", me)
+        say("this character now has its own profile, \"%s\", starting empty. /fcdm (Profile) can switch it to another.", own)
     end
+end
+
+-- The four lists in a stored settings string, for ownsLists.
+local function storedLists(s)
+    local t, p = {}, {}
+    for k, v in s:gmatch("([^;=]+)=([^;]*)") do t[k] = v end
+    for _, key in ipairs(BAR_KEYS) do
+        p[key] = {}
+        for n in (t["i" .. key:sub(1, 1)] or ""):gmatch("[^,]+") do p[key][#p[key] + 1] = tonumber(n) end
+    end
+    return p
 end
 
 -- Called at login and again once the macro list has certainly loaded.
 -- Returns "all" when every setting came from the macro, "lists" when only
 -- this character's lists did, else false.
-local function mirrorLogin(final)
+local function mirrorLogin(final, force)
     if mirror.ready then return false end
-    local stored = readMirror()
+    local stored, old = readMirror()
+    if stored and old then
+        -- Named the pre-0.8.0 way, by name and realm, so it may belong to another
+        -- character with this one's name. Taken only when its spells are ours.
+        local mine = ownsLists(storedLists(stored))
+        if mine == nil and not force then return false end     -- the spellbook has not loaded: ask again
+        if mine then mirror.fromOld = true else stored = nil end
+    end
     local restored = false
     if stored then
         mirror.found = #stored
@@ -1450,7 +1558,7 @@ local function mirrorLogin(final)
         if not resolved then        -- the loaded settings, if any, had nothing for this character
             local ok, name = applySettings(stored, not mirror.hadSV)
             if ok then
-                adoptProfile(name or charKey())
+                adoptProfile(name or ownProfileName())
                 restored = mirror.hadSV and "lists" or "all"
             end
         end
@@ -1526,7 +1634,7 @@ function ForeverCDM.Profile(action, name)
         end
         if action == "delete" then
             local users = {}
-            for who, p in pairs(db.profileKeys) do if p == name then users[#users + 1] = who end end
+            for who, p in pairs(db.profileKeys) do if p == name then users[#users + 1] = db.charLabels[who] or who end end
             if #users > 0 then
                 table.sort(users)
                 say("profile %s is in use by %s. Switch that character to another profile first.", name, table.concat(users, ", "))
@@ -1539,7 +1647,8 @@ function ForeverCDM.Profile(action, name)
     saveProfile()
     if action == "delete" then
         db.profiles[name] = nil
-        if db.legacyProfile == name then db.legacyProfile, legacyLists = nil, nil end
+        db.legacyProfiles[name] = nil
+        if name == legacyListsName then legacyLists, legacyListsName = nil, nil end
         say("deleted profile %s.", name)
     else
         if action == "new" then
@@ -1575,7 +1684,7 @@ local LISTS_MSG = "the saved settings had nothing for this character, so its tra
 -- has been read (or is known to be absent) nothing is written to it, and until
 -- this character's profile is decided its lists stay hidden.
 function lateMirror(final, force)
-    local restored = mirrorLogin(final)
+    local restored = mirrorLogin(final, force)
     local was = resolved
     resolveCharacter(force)
     if restored then say(restored == "all" and RESTORED_MSG or LISTS_MSG) end
@@ -1667,7 +1776,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         end
     elseif event == "SPELLS_CHANGED" then
         buildRankIndex()
-        resolveCharacter()
+        lateMirror(mirror.macrosSeen)     -- a login decision may have been waiting for the spellbook
         refreshAll()
         if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
     else
@@ -1905,10 +2014,11 @@ SlashCmdList.FOREVERCDM = function(msg)
     elseif cmd == "reset" then
         -- The shared layout and THIS character's lists go back to defaults.
         -- Other characters' profiles are theirs, so they stay.
-        local profiles, keys, legacy, mine, mirrorOn = db.profiles, db.profileKeys, db.legacyProfile, activeName(), db.macroMirror
+        local profiles, keys, legacy, labels = db.profiles, db.profileKeys, db.legacyProfiles, db.charLabels
+        local mine, mirrorOn = activeName(), db.macroMirror
         ForeverCDMDB = nil
         ensureDB()
-        db.profiles, db.profileKeys, db.legacyProfile, db.macroMirror = profiles, keys, legacy, mirrorOn
+        db.profiles, db.profileKeys, db.legacyProfiles, db.charLabels, db.macroMirror = profiles, keys, legacy, labels, mirrorOn
         if mine then
             profiles[mine] = { cds = {}, utilities = {}, buffs = {}, debuffs = {} }
             loadProfile(mine)

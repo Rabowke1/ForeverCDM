@@ -56,8 +56,9 @@ between game sessions.
 
 ## Tracking profiles
 
-Each character keeps its own tracked spells, in a profile named after it (`Name - Realm`)
-that is created the first time it logs in. The ordered lists for Cooldowns, Utilities,
+Each character keeps its own tracked spells, in a profile named after it
+(`Name (Class) - Realm`) that is created the first time it logs in. Characters are told
+apart by their GUID, since two characters can share a first name. The ordered lists for Cooldowns, Utilities,
 Buffs and Debuffs (tracked items included) belong to the profile; positions, anchors,
 sizes, appearance and learned buff durations are shared by every character. Edits save
 automatically.
@@ -77,8 +78,10 @@ Lists saved before profiles existed go to the character they belong to: its own 
 macro if it has one, otherwise the character whose spellbook has those spells. Until that
 character logs in they wait as a profile called **Default**.
 
-On the beta, each character's settings macro holds that character's profile. Profiles no
-character uses ride along while they fit; `/fcdm mirror` shows the backup status.
+On the beta, each character's settings macro holds that character's profile, named after its
+GUID. A macro from an older version, named after name and realm, is taken over only by the
+character whose spells it holds. Profiles no character uses ride along while they fit;
+`/fcdm mirror` shows the backup status.
 `/fcdm reset` resets the shared layout and this character's lists, and keeps other
 characters' profiles.
 
