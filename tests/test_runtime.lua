@@ -597,3 +597,38 @@ if EventRegistry then
     callbacks['EditMode.Exit']()
     print('snap tolerance, edges, centres, scaled targets, Shift, native toggle and cleanup checks passed')
 end
+
+-- Exercise the profile toolbar using the same callbacks as the settings window.
+ForeverCDM_ToggleConfig()
+if not ForeverCDMConfig:IsShown() then ForeverCDM_ToggleConfig() end
+local function profileButton(label)
+    for _, f in ipairs(frames) do
+        if f.parent == ForeverCDMConfig and f.label and f.label:GetText() == label then return f end
+    end
+    error('missing profile button: ' .. label)
+end
+ForeverCDMProfileName:SetText('UI Copy')
+profileButton('Copy').scripts.OnClick()
+assert(ForeverCDMDB.activeProfile == 'UI Copy', 'toolbar copy failed')
+local originalFirst = ForeverCDMDB.cds[1]
+SlashCmdList.FOREVERCDM('add 98765')
+ForeverCDMProfileName:SetText('UI Empty')
+profileButton('New').scripts.OnClick()
+assert(#ForeverCDMDB.cds == 0, 'toolbar new failed')
+local profileMenu = {}
+MenuUtil = {CreateContextMenu = function(owner, generate)
+    generate(owner, {CreateTitle = function() end, CreateRadio = function(_, label, selected, choose)
+        profileMenu[label] = choose
+    end})
+end}
+ForeverCDMConfig.profileButton.scripts.OnClick(ForeverCDMConfig.profileButton)
+profileMenu['UI Copy']()
+assert(ForeverCDMDB.cds[1] == originalFirst and ForeverCDM.Contains(ForeverCDMDB.cds, 98765), 'toolbar switch lost lists')
+ForeverCDMProfileName:SetText('UI Renamed')
+profileButton('Rename').scripts.OnClick()
+assert(ForeverCDMDB.activeProfile == 'UI Renamed' and not ForeverCDMDB.profiles['UI Copy'], 'toolbar rename failed')
+ForeverCDMProfileName:SetText('UI Empty')
+profileButton('Delete').scripts.OnClick()
+assert(not ForeverCDMDB.profiles['UI Empty'], 'toolbar delete failed')
+assert(not ForeverCDM.Contains(ForeverCDMDB.profiles.Default.cds, 98765), 'UI edits leaked into Default')
+print('profile toolbar create, copy, switch, rename, delete and list isolation checks passed')

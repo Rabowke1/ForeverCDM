@@ -52,6 +52,18 @@ local function secret(v) return issecretvalue and issecretvalue(v) end
 
 -- Settings ------------------------------------------------------------------
 
+local function saveProfile()
+    if not db or not db.profiles or not db.activeProfile then return end
+    local profile = {}
+    for _, key in ipairs(BAR_KEYS) do profile[key] = { unpack(db[key]) } end
+    db.profiles[db.activeProfile] = profile
+end
+
+local function loadProfile(name)
+    for _, key in ipairs(BAR_KEYS) do db[key] = { unpack(db.profiles[name][key] or {}) } end
+    db.activeProfile = name
+end
+
 local function ensureDB()
     ForeverCDMDB = ForeverCDMDB or {}
     db = ForeverCDMDB
@@ -83,6 +95,9 @@ local function ensureDB()
         db.rowSize[key] = db.rowSize[key] or db.size
         db.rowSpacing[key] = db.rowSpacing[key] or db.spacing
     end
+    db.profiles = db.profiles or {}
+    db.activeProfile = db.activeProfile or "Default"
+    if db.profiles[db.activeProfile] then loadProfile(db.activeProfile) else saveProfile() end
 end
 
 -- Spell helpers ---------------------------------------------------------------
@@ -1054,10 +1069,33 @@ local function macroAPI()
     return CreateMacro and EditMacro and DeleteMacro and GetMacroBody and GetMacroIndexByName and true or false
 end
 
+local function encodeProfileName(name)
+    return (name:gsub("[^%w _%-]", function(c) return string.format("%%%02X", c:byte()) end))
+end
+
+local function decodeProfileName(name)
+    return (name:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end))
+end
+
 local function encodeSettings(withDurations)
+    saveProfile()
     local parts = {}
     local function put(k, v) parts[#parts + 1] = k .. "=" .. v end
     put("v", "1")
+    local profileCount = 0
+    for _ in pairs(db.profiles) do profileCount = profileCount + 1 end
+    if db.activeProfile ~= "Default" or profileCount > 1 then
+        put("pn", encodeProfileName(db.activeProfile))
+        local names, profiles = {}, {}
+        for name in pairs(db.profiles) do if name ~= db.activeProfile then names[#names + 1] = name end end
+        table.sort(names)
+        for _, name in ipairs(names) do
+            local p = db.profiles[name]
+            profiles[#profiles + 1] = table.concat({encodeProfileName(name), table.concat(p.cds, ","),
+                table.concat(p.utilities, ","), table.concat(p.buffs, ","), table.concat(p.debuffs or {}, ",")}, "~")
+        end
+        put("pf", table.concat(profiles, "|"))
+    end
     put("L", db.locked and "1" or "0")
     put("hr", db.hideReady and "1" or "0")
     put("sn", db.showNames and "1" or "0")
@@ -1117,6 +1155,17 @@ local function applySettings(s)
     for id, dur in (t.d or ""):gmatch("(%d+):([%d%.]+)") do
         db.buffDurations[tonumber(id)] = tonumber(dur)
     end
+    db.profiles = {}
+    db.activeProfile = t.pn and decodeProfileName(t.pn) or "Default"
+    for record in (t.pf or ""):gmatch("[^|]+") do
+        local fields = {}
+        for field in (record .. "~"):gmatch("(.-)~") do fields[#fields + 1] = field end
+        if #fields >= 4 then
+            db.profiles[decodeProfileName(fields[1])] = {cds = nums(fields[2]), utilities = nums(fields[3]),
+                buffs = nums(fields[4]), debuffs = nums(fields[5])}
+        end
+    end
+    saveProfile()
     return true
 end
 
@@ -1158,7 +1207,9 @@ local function writeMirror()
     local s = encodeSettings(true)
     if #s > MIRROR_DATA * MIRROR_MACROS then s = encodeSettings(false) end      -- durations are re-learnable
     if #s > MIRROR_DATA * MIRROR_MACROS then                                    -- keep the last good copy
-        mirror.note = "settings too large for the macro; the last saved copy was kept"
+        local note = "settings too large for the macro; the last saved copy was kept"
+        if mirror.note ~= note then say("%s. Your current profiles are still stored in SavedVariables.", note) end
+        mirror.note = note
         return
     end
     local n = math.max(1, math.ceil(#s / MIRROR_DATA))
@@ -1186,6 +1237,7 @@ local function writeMirror()
 end
 
 persistSoon = function()
+    saveProfile()
     if db and not db.macroMirror and not mirror.hadSV and not hinted and not loginHinted and mirror.ready then
         hinted = true
         say("heads up: the beta client forgets addon settings when the game restarts. Tick \"Keep settings in a macro\" in /fcdm to keep this setup.")
@@ -1254,6 +1306,63 @@ function ForeverCDM.SpellIcon(id) return spellIcon(id) end
 function ForeverCDM.Resolve(text) return resolveSpell(text) end
 function ForeverCDM.Contains(list, id) return contains(list, id) end
 function ForeverCDM.Auto() return autoPopulate() end
+
+function ForeverCDM.ProfileNames()
+    local names = {}
+    for name in pairs(db.profiles) do names[#names + 1] = name end
+    table.sort(names)
+    return names
+end
+
+-- Profiles own only the tracked lists; layout, appearance and learned durations
+-- remain shared. Edits to the active lists are saved by every normal refresh.
+function ForeverCDM.Profile(action, name)
+    name = strtrim(name or "")
+    if action == "list" or action == "" then
+        say("profile: %s. Available: %s", db.activeProfile, table.concat(ForeverCDM.ProfileNames(), ", "))
+        return true
+    end
+    if InCombatLockdown and InCombatLockdown() then say("change profiles after combat ends.") return false end
+    if name == "" or #name > 48 or name:find("[%c|]") then
+        say("use a profile name of 1-48 bytes without control characters or |.") return false
+    end
+    local exists = db.profiles[name]
+    if action == "new" or action == "copy" or action == "rename" then
+        if exists then say("profile %s already exists.", name) return false end
+    elseif action == "use" or action == "delete" then
+        if not exists then say("profile %s does not exist.", name) return false end
+        if action == "delete" and name == db.activeProfile then
+            say("switch to another profile before deleting the active one.") return false
+        end
+    else
+        say("profile commands: list, new, copy, use, rename, delete <name>.") return false
+    end
+    saveProfile()
+    if action == "delete" then
+        db.profiles[name] = nil
+        say("deleted profile %s.", name)
+    else
+        if action == "new" then
+            db.profiles[name] = {cds = {}, utilities = {}, buffs = {}, debuffs = {}}
+        elseif action == "copy" or action == "rename" then
+            local p = {}
+            for _, key in ipairs(BAR_KEYS) do p[key] = {unpack(db[key])} end
+            db.profiles[name] = p
+            if action == "rename" then db.profiles[db.activeProfile] = nil end
+        end
+        loadProfile(name)
+        -- A newly selected list must not inherit another profile's aura state.
+        for _, list in pairs(icons) do
+            for _, icon in ipairs(list) do
+                icon.auraInstanceID, icon.castAt, icon.combatRemoved, icon.casts = nil, nil, nil, nil
+            end
+        end
+        say("profile: %s (changes save automatically).", name)
+    end
+    refreshAll()
+    if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
+    return true
+end
 
 -- Events ---------------------------------------------------------------------------
 
@@ -1363,6 +1472,7 @@ C_Timer.NewTicker(0.5, function() if db then updateBuffs() updateDebuffs() end e
 -- Slash ------------------------------------------------------------------------------
 
 local HELP = {
+    "/fcdm profile [list|new|copy|use|rename|delete] <name>  manage tracked-list profiles",
     "Game Menu > Edit Mode  drag row handles; positions save immediately on drop",
     "Right-click a row in Edit Mode to attach it to another frame",
     "/fcdm anchor <cds|utilities|buffs> <FrameName|none>  attach or detach a row",
@@ -1392,7 +1502,10 @@ SlashCmdList.FOREVERCDM = function(msg)
     cmd = strlower(cmd or "")
     if not db then say("not loaded yet.") return end
 
-    if cmd == "add" or cmd == "addbuff" or cmd == "addutility" or cmd == "adddebuff" then
+    if cmd == "profile" then
+        local action, name = rest:match("^(%S*)%s*(.-)$")
+        ForeverCDM.Profile(strlower(action), name)
+    elseif cmd == "add" or cmd == "addbuff" or cmd == "addutility" or cmd == "adddebuff" then
         local id = resolveSpell(rest)
         if not id then say("no spell called \"%s\". Use the name from your spellbook, or a spellID.", rest) return end
         local key = cmd == "add" and "cds" or cmd == "addutility" and "utilities" or cmd == "adddebuff" and "debuffs" or "buffs"

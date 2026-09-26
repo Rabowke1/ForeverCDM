@@ -54,6 +54,28 @@ An attached row will nevertheless follow its target when a Blizzard layout moves
 On the beta, enable **Keep settings in a macro** if the client forgets your settings
 between game sessions.
 
+## Tracking profiles
+
+The profile controls at the top of `/fcdm` store separate ordered lists for
+Cooldowns, Utilities, Buffs, and Debuffs (including tracked items). Your existing lists
+become **Default**. Edits save automatically to the active profile; positions,
+anchors, sizes, appearance, and learned buff durations remain shared.
+
+Select a profile using the **Profile** menu. Enter a name beside it and choose
+**New** for empty lists, **Copy** to duplicate the current lists, or **Rename** to
+rename the current profile. **Delete** removes the typed name; switch away from
+a profile before deleting it. Profile changes are blocked during combat.
+
+The same actions are available as `/fcdm profile new PvP`, `/fcdm profile copy Raid`,
+`/fcdm profile use Default`, `/fcdm profile rename Solo`, and
+`/fcdm profile delete Raid`. `/fcdm profile` lists profiles. Names are case-sensitive
+and can contain spaces (up to 48 bytes, no control characters or `|`).
+
+Profiles persist in SavedVariables and are included in the optional settings macro.
+The macro still has its existing three-slot size limit: if all profiles do not fit,
+the last macro backup is retained. Check `/fcdm mirror` for backup status before
+relying on it during the beta. `/fcdm reset` resets all profiles and settings.
+
 ## Install
 Drop the `ForeverCDM` folder into `World of Warcraft\_classic_beta_\Interface\AddOns\`.
 
