@@ -17,7 +17,7 @@ local function object(kind, name, parent)
     if name then _G[name] = f end
     return f
 end
-for _, name in ipairs({ 'SetTexCoord', 'SetMovable', 'SetClampedToScreen',
+for _, name in ipairs({ 'SetTexCoord', 'SetMovable', 'SetClampedToScreen', 'SetWordWrap',
     'SetDrawEdge', 'SetHideCountdownNumbers', 'SetDesaturated',
     'SetCooldownFromDurationObject', 'SetAllPoints', 'SetColorTexture',
     'RegisterForDrag', 'StartMoving', 'StopMovingOrSizing', 'SetFrameStrata',
@@ -151,6 +151,10 @@ end
 assert(ForeverCDMDB.cds == oldCDs and oldCDs[1] == 102, 'migration changed saved order')
 assert(ForeverCDMDB.buffs == oldBuffs and ForeverCDMDB.pos.cds == oldPosition, 'migration changed existing settings')
 assert(ForeverCDMDB.size == 42 and ForeverCDMDB.utilities and ForeverCDMDB.pos.utilities, 'utility defaults missing')
+-- The lists saved before profiles existed are this character's spells (its spellbook has
+-- them), so it claims them as its own profile instead of leaving them as "Default".
+assert(ForeverCDM.ActiveProfile() and not ForeverCDMDB.profiles.Default
+    and ForeverCDMDB.profiles[ForeverCDM.ActiveProfile()].cds[1] == 102, 'pre-profile lists were not claimed by their owner')
 assert(ForeverCDM_utility, 'utility row was not created')
 ForeverCDM_ToggleConfig()
 assert(ForeverCDMConfig:IsShown(), 'config did not open')
@@ -607,9 +611,10 @@ local function profileButton(label)
     end
     error('missing profile button: ' .. label)
 end
+local own = ForeverCDM.ActiveProfile()
 ForeverCDMProfileName:SetText('UI Copy')
 profileButton('Copy').scripts.OnClick()
-assert(ForeverCDMDB.activeProfile == 'UI Copy', 'toolbar copy failed')
+assert(ForeverCDM.ActiveProfile() == 'UI Copy', 'toolbar copy failed')
 local originalFirst = ForeverCDMDB.cds[1]
 SlashCmdList.FOREVERCDM('add 98765')
 ForeverCDMProfileName:SetText('UI Empty')
@@ -626,9 +631,9 @@ profileMenu['UI Copy']()
 assert(ForeverCDMDB.cds[1] == originalFirst and ForeverCDM.Contains(ForeverCDMDB.cds, 98765), 'toolbar switch lost lists')
 ForeverCDMProfileName:SetText('UI Renamed')
 profileButton('Rename').scripts.OnClick()
-assert(ForeverCDMDB.activeProfile == 'UI Renamed' and not ForeverCDMDB.profiles['UI Copy'], 'toolbar rename failed')
+assert(ForeverCDM.ActiveProfile() == 'UI Renamed' and not ForeverCDMDB.profiles['UI Copy'], 'toolbar rename failed')
 ForeverCDMProfileName:SetText('UI Empty')
 profileButton('Delete').scripts.OnClick()
 assert(not ForeverCDMDB.profiles['UI Empty'], 'toolbar delete failed')
-assert(not ForeverCDM.Contains(ForeverCDMDB.profiles.Default.cds, 98765), 'UI edits leaked into Default')
+assert(not ForeverCDM.Contains(ForeverCDMDB.profiles[own].cds, 98765), "UI edits leaked into the character's own profile")
 print('profile toolbar create, copy, switch, rename, delete and list isolation checks passed')

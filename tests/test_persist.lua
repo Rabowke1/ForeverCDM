@@ -173,8 +173,11 @@ fire('UPDATE_MACROS')
 runTimers()
 assert(said('restored from your settings macro') and ForeverCDMDB.cds[1] == 101, 'late-arriving macro was not restored')
 
--- 4. A real SavedVariables table always wins (the day Blizzard fixes the client).
-db = session({ cds = { 999 }, buffs = {}, utilities = {} })
+-- 4. Saved settings that did load win (the day Blizzard fixes the client). They hold
+--    this character's own profile, so its macro is not needed at all.
+local ME = 'Thunderz - Beta Realm'
+db = session({ cds = { 999 }, buffs = {}, utilities = {},
+    profiles = { [ME] = { cds = { 999 }, buffs = {}, utilities = {}, debuffs = {} } }, profileKeys = { [ME] = ME } })
 assert(db.cds[1] == 999 and #db.cds == 1, 'macro overwrote settings the client actually loaded')
 assert(not said('restored'), 'claimed a restore it should not have done')
 assert(db.macroMirror == true, 'option should still read as on, since the macro exists')
@@ -249,50 +252,146 @@ assert(#db.cds == 0 and not said('restored'), 'unrecognised macro contents were 
 slash('store 1/1 anything')
 assert(said('clicking it does nothing'), 'the macro click handler is missing')
 
--- Profiles survive real SavedVariables and the beta's macro-only cold start.
+-- Profiles: named lists, one of them in use per character. They survive saved
+-- settings and the beta's macro-only cold start.
 macros = {}
 db = session({cds = {101, -6948}, buffs = {201}, utilities = {103}, debuffs = {301}})
-assert(db.activeProfile == 'Default' and db.profiles.Default.cds[2] == -6948, 'legacy lists were not migrated')
+-- No spellbook in this harness to compare with, so the lists saved before
+-- profiles existed are taken as this character's own.
+assert(ForeverCDM.ActiveProfile() == ME and db.profiles[ME].cds[2] == -6948 and not db.profiles.Default,
+    'legacy lists were not migrated to this character')
 slash('profile copy Raid;50%~')
 slash('add 102')
-assert(#db.profiles.Default.cds == 2, 'copy shares mutable lists')
+assert(#db.profiles[ME].cds == 2, 'copy shares mutable lists')
 slash('profile new Empty')
 assert(#db.cds == 0 and #db.buffs == 0 and #db.utilities == 0 and #db.debuffs == 0, 'new profile is not empty')
-slash('profile use Default')
+slash('profile use ' .. ME)
 slash('mirror on')
 db = session(nil)
-assert(db.activeProfile == 'Default' and db.cds[2] == -6948, 'active default not restored')
-assert(db.profiles.Empty and #db.profiles.Empty.cds == 0, 'empty profile lost')
+assert(ForeverCDM.ActiveProfile() == ME and db.cds[2] == -6948, 'active profile not restored')
+assert(db.profiles.Empty and #db.profiles.Empty.cds == 0, 'unused profile lost')
 slash('profile use Raid;50%~')
-assert(db.cds[3] == 102 and db.buffs[1] == 201 and db.debuffs[1] == 301, 'inactive profile or escaped name lost')
+assert(db.cds[3] == 102 and db.buffs[1] == 201 and db.debuffs[1] == 301, 'unused profile or escaped name lost')
 db = session(nil)
-assert(db.activeProfile == 'Raid;50%~' and db.cds[3] == 102, 'active profile name lost')
+assert(ForeverCDM.ActiveProfile() == 'Raid;50%~' and db.cds[3] == 102, 'active profile name lost')
 slash('profile rename Solo')
-assert(not db.profiles['Raid;50%~'] and db.profiles.Solo, 'rename failed')
+assert(not db.profiles['Raid;50%~'] and db.profiles.Solo and ForeverCDM.ActiveProfile() == 'Solo', 'rename failed')
 slash('profile delete Solo')
 assert(db.profiles.Solo, 'deleted active profile')
 slash('profile delete Empty')
 assert(not db.profiles.Empty, 'delete failed')
 inCombat = true
-slash('profile use Default')
-assert(db.activeProfile == 'Solo', 'switched in combat')
+slash('profile use ' .. ME)
+assert(ForeverCDM.ActiveProfile() == 'Solo', 'switched in combat')
 inCombat = false
 db = session(db)
-assert(db.activeProfile == 'Solo' and db.cds[3] == 102 and db.profiles.Default, 'SavedVariables profile restart failed')
+assert(ForeverCDM.ActiveProfile() == 'Solo' and db.cds[3] == 102 and db.profiles[ME], 'SavedVariables profile restart failed')
 slash('profile new Solo')
 assert(db.cds[3] == 102, 'duplicate name overwrote profile')
 slash('profile new   ')
-assert(db.activeProfile == 'Solo', 'empty name accepted')
--- Capacity failures retain the previous complete backup, including profiles.
+assert(ForeverCDM.ActiveProfile() == 'Solo', 'empty name accepted')
+-- Capacity: learned durations go first, then the profiles no character uses.
+-- This character's own lists are always written while they fit on their own.
 slash('profile new Large')
+for i = 1, 30 do db.cds[i] = 200000 + i end
+for i = 1, 60 do db.profiles.Solo.cds[i] = 100000 + i end
+printed = {}
+ForeverCDM.Refresh()
+runTimers()
+assert(said('did not fit'), 'leaving out the unused profiles was not reported')
+db = session(nil)
+assert(ForeverCDM.ActiveProfile() == 'Large' and #db.cds == 30, 'active lists were not written when unused profiles overflowed')
+assert(not db.profiles.Solo, 'the unused profiles should have been left out of the macro')
+-- Too big even on its own: keep the last complete copy.
 for i = 1, 200 do db.cds[i] = 100000 + i end
 ForeverCDM.Refresh()
 runTimers()
 slash('mirror')
-assert(said('settings too large'), 'oversized profiles were not reported')
--- The empty Large profile was saved before it grew; it is the last complete copy.
+assert(said('settings too large'), 'oversized lists were not reported')
 db = session(nil)
-assert(db.profiles.Solo and db.profiles.Default and #db.cds == 0, 'overflow damaged last complete backup')
+assert(#db.cds == 30, 'overflow damaged last complete backup')
+
+-- Per character. From here each session is handed the table the last one saved,
+-- the way the client does within one launch (and across launches once saved
+-- settings load), so two characters share one account's settings.
+macros = {}
+local books = { Hunter = { 101, 102 }, Paladin = { 301, 302 } }
+C_SpellBook = {
+    GetNumSpellBookSkillLines = function() return 1 end,
+    GetSpellBookSkillLineInfo = function() return { itemIndexOffset = 0, numSpellBookItems = #books[player], name = 'Class' } end,
+    GetSpellBookItemInfo = function(i) local id = books[player][i] return { spellID = id, name = 'Spell ' .. id } end,
+}
+local HUNTER, PALADIN = 'Hunter - Beta Realm', 'Paladin - Beta Realm'
+
+-- a. Lists saved before profiles existed, with the hunter's macro opt-in. The
+--    paladin logs in first: it must get neither the hunter's spells nor its opt-in.
+player = 'Paladin'
+db = session({ cds = { 101, 102 }, utilities = { -6948 }, buffs = {}, debuffs = {}, macroMirror = true })
+assert(#db.cds == 0 and #db.utilities == 0 and ForeverCDM.ActiveProfile() == PALADIN, "the paladin was given the hunter's spells")
+assert(db.profiles.Default and db.profiles.Default.cds[1] == 101 and said('kept as the profile "Default"'),
+    'the earlier setup was not kept for its owner')
+assert(#macros == 0 and not db.macroMirror, "the hunter's macro opt-in carried over to the paladin")
+slash('add 301')
+
+-- b. The hunter's spellbook has those spells, so it claims them, renamed after itself.
+player = 'Hunter'
+db = session(db)
+assert(db.cds[1] == 101 and db.cds[2] == 102 and db.utilities[1] == -6948, 'the hunter did not get its earlier lists back')
+assert(ForeverCDM.ActiveProfile() == HUNTER and not db.profiles.Default, 'claimed lists should be renamed after their owner')
+player = 'Paladin'
+db = session(db)
+assert(#db.cds == 1 and db.cds[1] == 301, "the paladin lost its list, or got the hunter's")
+
+-- c. Loaded settings that know nothing of a character: its lists come from its own
+--    macro, and the loaded (newer, shared) layout stays.
+player = 'Hunter'
+db = session(db)
+slash('mirror on')
+player = 'Paladin'
+local lonely = session(nil)          -- a beta cold start: nothing loads, and the paladin has no macro
+slash('add 302')
+slash('size cds 50')
+player = 'Hunter'
+db = session(lonely)                 -- the hunter is handed what the paladin just saved
+assert(db.cds[1] == 101 and db.cds[2] == 102 and said('restored from its settings macro'), "the hunter's lists did not come from its own macro")
+assert(db.rowSize.cds == 50, 'the loaded layout should win over the copy in the macro')
+assert(db.profiles[PALADIN].cds[1] == 302, "the paladin's profile was lost")
+
+-- d. The macro opt-in is per character, both ways round.
+player = 'Paladin'
+db = session(db)
+assert(not db.macroMirror, "the paladin inherited the hunter's opt-in")
+player = 'Hunter'
+db = session(db)
+assert(db.macroMirror == true, "the paladin's choice switched off the hunter's macro")
+
+-- e. Two characters can share a profile. Renaming it takes both along, and it
+--    cannot be deleted while another character uses it.
+slash('profile copy Shared')
+player = 'Paladin'
+db = session(db)
+slash('profile use Shared')
+slash('profile rename Team')
+player = 'Hunter'
+db = session(db)
+assert(ForeverCDM.ActiveProfile() == 'Team' and db.cds[1] == 101, 'renaming a shared profile left the other character behind')
+slash('profile use ' .. HUNTER)
+printed = {}
+slash('profile delete Team')
+assert(db.profiles.Team and said('in use by ' .. PALADIN), 'deleted a profile another character uses')
+
+-- f. /fcdm reset clears this character's lists and the shared layout, and leaves
+--    other characters' profiles alone.
+slash('reset')
+db = ForeverCDMDB
+assert(#db.cds == 0 and db.rowSize.cds == 36 and ForeverCDM.ActiveProfile() == HUNTER, 'reset did not reset this character')
+assert(db.profiles.Team and db.profiles.Team.cds[1] == 101, "reset removed another character's profile")
+C_SpellBook, player = nil, 'Thunderz'
+
+-- g. A character whose profile no longer exists starts one of its own, and the
+--    missing name is not brought back as an empty profile while it waits.
+db = session({ profiles = {}, profileKeys = { [ME] = 'Gone' } })
+assert(ForeverCDM.ActiveProfile() == ME and not db.profiles.Gone, 'a missing profile came back, or the character was left without one')
 
 -- 13. A client without the macro API: everything still loads.
 local savedCreateMacro = CreateMacro

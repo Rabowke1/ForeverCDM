@@ -339,7 +339,7 @@ end
 
 refreshList = function()
     local d = db()
-    if win.profileButton then win.profileButton:SetText("Profile: " .. d.activeProfile) end
+    if win.profileButton then win.profileButton:SetText("Profile: " .. (CDM.ActiveProfile() or "loading...")) end
     local spells = spellbookSpells()
     local content = win.content
     local y, heads, lastTab = 0, 0, nil
@@ -455,12 +455,15 @@ local function build()
             root:CreateTitle("Tracked cooldowns, utilities, buffs and debuffs")
             for _, profileName in ipairs(CDM.ProfileNames()) do
                 local name = profileName
-                root:CreateRadio(name, function() return db().activeProfile == name end,
+                root:CreateRadio(name, function() return CDM.ActiveProfile() == name end,
                     function() CDM.Profile("use", name) end)
             end
         end)
     end)
     win.profileButton:SetPoint("TOPLEFT", 14, -50)
+    -- A character's own profile is named "Name - Realm", which can outgrow the button.
+    win.profileButton.label:SetWidth(208)
+    win.profileButton.label:SetWordWrap(false)
     local profileName = CreateFrame("EditBox", "ForeverCDMProfileName", win)
     profileName:SetSize(210, 24)
     profileName:SetPoint("TOPLEFT", 244, -50)
@@ -471,7 +474,7 @@ local function build()
     outline(profileName, LINE)
     profileName:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     profileName:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-    local profileHint = text(win, "GameFontDisableSmall", "Name for New / Copy / Rename / Delete; edits save automatically. Layout is shared.")
+    local profileHint = text(win, "GameFontDisableSmall", "Each character keeps its own profile. Type a name for New, Copy, Rename or Delete. Layout is shared.")
     profileHint:SetPoint("TOPLEFT", 244, -77)
     for i, entry in ipairs({{"New", "new"}, {"Copy", "copy"}, {"Rename", "rename"}, {"Delete", "delete"}}) do
         local action = entry[2]

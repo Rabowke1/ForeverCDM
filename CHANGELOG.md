@@ -1,9 +1,24 @@
 # Changelog
 
 ## Unreleased
-- Add named tracking profiles with automatic saving and create/copy/switch/rename/delete
-  controls. Migrate existing lists to Default and include profiles in the optional
-  macro backup; row layout and appearance remain shared.
+- **Each character keeps its own tracked spells.** Saved settings are shared by every character
+  on the account, so once the beta started loading them a paladin could open on a hunter's bars.
+  The lists now live in profiles, and each character uses its own, named after it
+  ("Name - Realm"). Layout, sizes, anchors and options stay shared.
+- **Profiles** (contributed by shuyu42, PR #2): pick one from the Profile menu at the top of
+  `/fcdm`, or type a name for New, Copy, Rename or Delete. Two characters can share a profile;
+  renaming it takes both along, and it cannot be deleted while another character uses it.
+  `/fcdm profile` does the same from chat.
+- Your existing lists go to the character they belong to: its own settings macro if it has one,
+  otherwise the character whose spellbook has those spells. Any other character starts empty and
+  is told where the old setup went.
+- The settings macro is per character in every respect: turning it on for one character no longer
+  switches it on (or off) for another, and a character's own macro now fills in its lists when the
+  loaded settings have none for it.
+- When the settings macro runs out of room, learned durations are left out first, then profiles no
+  character uses. This character's own setup is always written while it fits on its own.
+- `/fcdm reset` resets the shared layout and this character's lists; other characters' profiles
+  are kept.
 
 ## 0.7.1 (2026-09-21)
 - **Debuffs applied before the pull now keep their timer in combat.** Hunter's Mark (and anything

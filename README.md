@@ -56,25 +56,31 @@ between game sessions.
 
 ## Tracking profiles
 
-The profile controls at the top of `/fcdm` store separate ordered lists for
-Cooldowns, Utilities, Buffs, and Debuffs (including tracked items). Your existing lists
-become **Default**. Edits save automatically to the active profile; positions,
-anchors, sizes, appearance, and learned buff durations remain shared.
+Each character keeps its own tracked spells, in a profile named after it (`Name - Realm`)
+that is created the first time it logs in. The ordered lists for Cooldowns, Utilities,
+Buffs and Debuffs (tracked items included) belong to the profile; positions, anchors,
+sizes, appearance and learned buff durations are shared by every character. Edits save
+automatically.
 
-Select a profile using the **Profile** menu. Enter a name beside it and choose
-**New** for empty lists, **Copy** to duplicate the current lists, or **Rename** to
-rename the current profile. **Delete** removes the typed name; switch away from
-a profile before deleting it. Profile changes are blocked during combat.
+The **Profile** menu at the top of `/fcdm` switches this character to another profile.
+Type a name beside it and choose **New** for empty lists, **Copy** to duplicate the
+current lists, or **Rename** to rename the current profile. **Delete** removes the typed
+name. Two characters can share a profile: renaming it takes both along, and a profile
+another character uses cannot be deleted. Profile changes are blocked in combat.
 
 The same actions are available as `/fcdm profile new PvP`, `/fcdm profile copy Raid`,
-`/fcdm profile use Default`, `/fcdm profile rename Solo`, and
-`/fcdm profile delete Raid`. `/fcdm profile` lists profiles. Names are case-sensitive
-and can contain spaces (up to 48 bytes, no control characters or `|`).
+`/fcdm profile use Raid`, `/fcdm profile rename Solo` and `/fcdm profile delete Raid`.
+`/fcdm profile` lists them. Names are case-sensitive and can contain spaces (up to 48
+bytes, no control characters or `|`).
 
-Profiles persist in SavedVariables and are included in the optional settings macro.
-The macro still has its existing three-slot size limit: if all profiles do not fit,
-the last macro backup is retained. Check `/fcdm mirror` for backup status before
-relying on it during the beta. `/fcdm reset` resets all profiles and settings.
+Lists saved before profiles existed go to the character they belong to: its own settings
+macro if it has one, otherwise the character whose spellbook has those spells. Until that
+character logs in they wait as a profile called **Default**.
+
+On the beta, each character's settings macro holds that character's profile. Profiles no
+character uses ride along while they fit; `/fcdm mirror` shows the backup status.
+`/fcdm reset` resets the shared layout and this character's lists, and keeps other
+characters' profiles.
 
 ## Install
 Drop the `ForeverCDM` folder into `World of Warcraft\_classic_beta_\Interface\AddOns\`.
