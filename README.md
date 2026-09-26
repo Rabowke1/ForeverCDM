@@ -14,6 +14,10 @@ it shows nothing. ForeverCDM reads your spellbook and your auras directly and dr
   swipe and charge counts; the Buffs row shows chosen auras while they are on you, and the Debuffs row
   shows your own debuffs on your target (Serpent Sting, Rend...), each with a remaining-time swipe.
 - Auras that are not up can stay dimmed on the bar, or be hidden until they happen (good for procs).
+- Combine icons: spells of which only one is up at a time (seals, auras, aspects, stings) can share
+  one icon that lights up with whichever is on. Use the + button in the Bars card.
+- Each character keeps its own tracked spells (see Tracking profiles below).
+- Out of combat the bars can stay, fade or hide; they come back in combat and on an enemy target.
 - Display only. It never casts and never makes decisions, so it stays inside the current addon rules.
 - Reads nothing it is not allowed to: secret timings are handed to the cooldown widget as duration
   objects, and in combat, where the client hides aura data from addons entirely, a buff that was up
@@ -26,7 +30,7 @@ by name or ID. `/fcdm help` lists the slash commands for people who prefer them.
 
 ### Positioning rows in Edit Mode
 Open **Game Menu > Edit Mode** to show labelled drag handles for Cooldowns, Utilities,
-and Buffs, even if a row is empty or normally locked. Drag a handle to position its row.
+Buffs and Debuffs, even if a row is empty or normally locked. Drag a handle to position its row.
 Closing Edit Mode restores your normal lock setting; `/fcdm unlock` and `/fcdm lock`
 still work for moving rows outside Edit Mode. Handles are disabled during combat.
 
@@ -98,6 +102,7 @@ lua tests/test_runtime.lua no-edit-mode
 lua tests/test_cast_tracking.lua
 lua tests/test_persist.lua
 lua tests/test_debuffs.lua
+lua tests/test_combine.lua
 ```
 For an in-game Edit Mode check:
 1. `/reload`, then open Game Menu > Edit Mode while the rows are locked. All three

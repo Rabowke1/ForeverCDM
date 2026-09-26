@@ -81,6 +81,20 @@ local function setActive(b, on)
     paint(b)
 end
 
+-- A flat button that explains itself on hover.
+local function withTip(b, title, body)
+    b:SetScript("OnEnter", function(self)
+        self.hover = true
+        paint(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(title)
+        GameTooltip:AddLine(body, 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function(self) self.hover = false paint(self) GameTooltip:Hide() end)
+    return b
+end
+
 -- Small square button carrying an arrow. Uses the atlas from Blizzard's modern
 -- scrollbar; if a client ever lacks it, a plain character stands in.
 local function arrowButton(parent, atlas, fallback)
@@ -246,7 +260,7 @@ local function refreshOrderList()
             row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
             row.name = text(row, "GameFontHighlightSmall")
             row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
-            row.name:SetPoint("RIGHT", row, "RIGHT", -72, 0)
+            row.name:SetPoint("RIGHT", row, "RIGHT", -94, 0)
             row.name:SetJustifyH("LEFT")
             row.down = arrowButton(row, "minimal-scrollbar-arrow-bottom", "v")
             row.down:SetPoint("RIGHT", -2, 0)
@@ -256,27 +270,37 @@ local function refreshOrderList()
             -- ID, which can be hard to find (or tell apart) in the spellbook list.
             row.remove = flatButton(row, "x", 20, 20)
             row.remove:SetPoint("RIGHT", row.up, "LEFT", -2, 0)
+            row.link = withTip(flatButton(row, "+", 20, 20), "Combine with the icon above",
+                "They show as one icon, lit by whichever of them is up: all your seals, auras or aspects in one place. Click again to separate them.")
+            row.link:SetPoint("RIGHT", row.remove, "LEFT", -2, 0)
             orderPool[i] = row
         end
         row.index = i
+        -- An entry combined with the one above is drawn indented, under it.
+        local linked = i > 1 and CDM.IsLinked(key, list[i])
+        row.icon:ClearAllPoints()
+        row.icon:SetPoint("LEFT", linked and 16 or 4, 0)
+        row.link:SetShown(CDM.CanLink(key) and i > 1)
+        setActive(row.link, linked)
+        row.link:SetScript("OnClick", function(self)
+            local id = db()[key][self:GetParent().index]
+            CDM.SetLinked(key, id, not CDM.IsLinked(key, id))
+            CDM.Refresh(); refreshOrderList()
+        end)
         row.icon:SetTexture(CDM.SpellIcon(list[i]))
         row.name:SetText(nameWithRank(list[i], CDM.SpellName(list[i])))
         row.up:SetEnabled(i > 1)
         row.down:SetEnabled(i < #list)
         row.up:SetScript("OnClick", function(self)
-            local current = db()[key]
-            local index = self:GetParent().index
-            if index > 1 then current[index], current[index - 1] = current[index - 1], current[index] end
+            CDM.MoveEntry(key, self:GetParent().index, -1)
             CDM.Refresh(); refreshOrderList()
         end)
         row.remove:SetScript("OnClick", function(self)
-            table.remove(db()[key], self:GetParent().index)
+            CDM.RemoveEntry(key, self:GetParent().index)
             CDM.Refresh(); refreshList()
         end)
         row.down:SetScript("OnClick", function(self)
-            local current = db()[key]
-            local index = self:GetParent().index
-            if index < #current then current[index], current[index + 1] = current[index + 1], current[index] end
+            CDM.MoveEntry(key, self:GetParent().index, 1)
             CDM.Refresh(); refreshOrderList()
         end)
         row:ClearAllPoints()
@@ -287,12 +311,15 @@ local function refreshOrderList()
     for i = #list + 1, #orderPool do orderPool[i]:Hide() end
     win.orderPanel:SetHeight(math.max(#list * ORDER_H, 1))
     for k, b in pairs(win.orderTabs) do setActive(b, k == key) end
+    local shown = 0          -- combined entries share one icon
+    for i, id in ipairs(list) do if i == 1 or not CDM.IsLinked(key, id) then shown = shown + 1 end end
     win.orderTitle:SetText(#list == 0 and "Empty. Tick spells on the left."
-        or (#list .. (#list == 1 and " icon" or " icons") .. ", shown left to right"))
+        or (shown .. (shown == 1 and " icon" or " icons") .. (CDM.CanLink(key) and #list > 1
+            and ", left to right. + joins above" or ", shown left to right")))
     win.orderClear:SetText("Clear " .. BAR_NAMES[key])
     win.sizeText:SetText(tostring(db().rowSize[key]))
     win.spacingText:SetText(tostring(db().rowSpacing[key]))
-    win.orderClear:SetScript("OnClick", function() wipe(db()[key]); CDM.Refresh(); refreshList(); refreshOrderList() end)
+    win.orderClear:SetScript("OnClick", function() CDM.ClearBar(key); CDM.Refresh(); refreshList(); refreshOrderList() end)
 end
 
 -- Spellbook (left card) -------------------------------------------------------------
@@ -318,7 +345,7 @@ local function newSpellRow(content)
         local list = db()[key]
         local idx = CDM.Contains(list, id)
         if on and not idx then list[#list + 1] = id end
-        if not on and idx then table.remove(list, idx) end
+        if not on and idx then CDM.RemoveEntry(key, idx) end
         CDM.Refresh()
         refreshOrderList()
     end
@@ -395,6 +422,7 @@ refreshList = function()
     setActive(win.lockBtn, not d.locked)
     win.hideReady:SetChecked(d.hideReady)
     win.names:SetChecked(d.showNames)
+    win.fade:SetText("Out of combat: " .. (d.fade or "show"))
     win.hideInactive:SetChecked(d.hideInactive and true or false)
     win.minimap:SetChecked(not d.minimap.hide)
     win.macroMirror:SetChecked(d.macroMirror and true or false)
@@ -593,6 +621,12 @@ local function build()
     y = y - 50
 
     y = y - 8
+    win.fade = withTip(wide("Out of combat: show", function()
+        local d = db()
+        d.fade = d.fade == nil and "fade" or d.fade == "fade" and "hide" or nil     -- show -> fade -> hide
+        CDM.Refresh()
+        refreshList()
+    end), "Out of combat", "Show: the bars stay as they are. Fade: they go faint. Hide: they disappear. Either way they come back in combat and while you target an enemy, and stay visible while the rows are unlocked.")
     win.lockBtn = wide("Unlock rows to drag", function() ForeverCDM_SetLocked(not db().locked) refreshList() end)
     wide("Auto-fill from spellbook", function()
         local n = CDM.Auto()
@@ -602,7 +636,7 @@ local function build()
     end)
     wide("Clear everything", function()
         local d = db()
-        wipe(d.cds) wipe(d.utilities) wipe(d.buffs) wipe(d.debuffs)
+        for _, key in ipairs({ "cds", "utilities", "buffs", "debuffs" }) do CDM.ClearBar(key) end
         CDM.Refresh()
         refreshList()
     end)

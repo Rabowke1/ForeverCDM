@@ -32,6 +32,7 @@ jobs:
           lua5.4 tests/test_cast_tracking.lua
           lua5.4 tests/test_persist.lua
           lua5.4 tests/test_debuffs.lua
+          lua5.4 tests/test_combine.lua
 
       - name: Package and upload
         uses: BigWigsMods/packager@v2

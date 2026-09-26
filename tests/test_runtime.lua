@@ -637,3 +637,30 @@ profileButton('Delete').scripts.OnClick()
 assert(not ForeverCDMDB.profiles['UI Empty'], 'toolbar delete failed')
 assert(not ForeverCDM.Contains(ForeverCDMDB.profiles[own].cds, 98765), "UI edits leaked into the character's own profile")
 print('profile toolbar create, copy, switch, rename, delete and list isolation checks passed')
+
+-- Combining in the Bars card: + joins a buff to the one above, and x on the first
+-- of a combined icon keeps the rest together without joining the icon before it.
+local function iconsOn(row)
+    local n = 0
+    for _, f in ipairs(frames) do if f.parent == row and f.members and f.shown then n = n + 1 end end
+    return n
+end
+ForeverCDM.ClearBar('buffs')
+for _, id in ipairs({ 103, 101, 102, 104 }) do table.insert(ForeverCDMDB.buffs, id) end
+ForeverCDMConfig.orderKey = 'buffs'
+ForeverCDM.Refresh()
+ForeverCDM_RefreshConfig()
+assert(not orderRow(1).link.shown and orderRow(2).link.shown, 'the first icon has nothing above it to combine with')
+orderRow(3).link.scripts.OnClick(orderRow(3).link)
+orderRow(4).link.scripts.OnClick(orderRow(4).link)
+assert(ForeverCDM.IsLinked('buffs', 102) and ForeverCDM.IsLinked('buffs', 104) and iconsOn(ForeverCDM_buffs) == 2,
+    '+ did not combine the buffs into one icon')
+assert(ForeverCDMConfig.orderTitle:GetText():find('^2 icons'), 'the Bars card should count combined entries as one icon')
+orderRow(2).remove.scripts.OnClick(orderRow(2).remove)
+assert(ForeverCDMDB.buffs[2] == 102 and not ForeverCDM.IsLinked('buffs', 102) and ForeverCDM.IsLinked('buffs', 104)
+    and iconsOn(ForeverCDM_buffs) == 2,
+    'x on the first buff broke the combined icon')
+ForeverCDMConfig.orderKey = 'cds'
+ForeverCDM_RefreshConfig()
+assert(not orderRow(2).link.shown, 'cooldown icons cannot be combined')
+print('Bars card combining checks passed')

@@ -439,6 +439,26 @@ assert(db.cds[1] == 101 and db.cds[2] == 102 and ForeverCDM.ActiveProfile() == H
     'the hunter did not get the shared profile back')
 C_SpellBook, player, macros = nil, 'Thunderz', {}
 
+-- Combined icons and the fade setting survive the macro, in the active profile
+-- and in a profile no character uses.
+db = session(nil)
+slash('mirror on')
+slash('addbuff 21084')
+slash('addbuff 20375')
+slash('adddebuff 1978')
+slash('adddebuff 3043')
+ForeverCDM.SetLinked('buffs', 20375, true)
+ForeverCDM.SetLinked('debuffs', 3043, true)
+slash('fade hide')
+db = session(nil)
+assert(ForeverCDM.IsLinked('buffs', 20375) and ForeverCDM.IsLinked('debuffs', 3043) and db.fade == 'hide',
+    'combined icons or the fade setting were lost')
+slash('profile new Other')
+db = session(nil)
+slash('profile use ' .. ME)
+assert(ForeverCDM.IsLinked('buffs', 20375) and ForeverCDM.IsLinked('debuffs', 3043), 'combined icons of an unused profile were lost')
+macros = {}
+
 -- 13. A client without the macro API: everything still loads.
 local savedCreateMacro = CreateMacro
 CreateMacro = nil

@@ -17,6 +17,7 @@
 --   /fcdm add <spell>         add a spell cooldown icon (name or spellID)
 --   /fcdm addbuff <spell>     add a buff to watch on yourself
 --   /fcdm adddebuff <spell>   add one of your debuffs to watch on your target
+--   /fcdm fade show|fade|hide what the bars do out of combat
 --   /fcdm remove <spell>      remove from either row
 --   /fcdm auto                add every active, non-passive spellbook spell with a cooldown
 --   /fcdm list | lock | unlock | size <px> | spacing <px> | reset
@@ -42,6 +43,7 @@ local icons = { cds = {}, utilities = {}, buffs = {}, debuffs = {} }
 -- New bars go on the END: the settings macro stores sizes by position in this list.
 local BAR_KEYS = { "cds", "utilities", "buffs", "debuffs" }
 local BAR_LABEL = { cds = "Cooldowns", utilities = "Utility", buffs = "Buffs", debuffs = "Debuffs" }
+local LINKABLE = { buffs = true, debuffs = true }   -- bars whose icons can be combined (slotsOf)
 local persistSoon        -- defined in the settings-mirror section; called wherever settings change
 local lateMirror         -- defined just above the event frame
 local editModeActive = false
@@ -96,8 +98,9 @@ local function activeName()
 end
 
 local function copyLists(from)
-    local p = {}
+    local p = { links = {} }
     for _, key in ipairs(BAR_KEYS) do p[key] = { unpack(from[key] or {}) } end
+    for key in pairs(LINKABLE) do p.links[key] = { unpack(from.links and from.links[key] or {}) } end
     return p
 end
 
@@ -109,7 +112,9 @@ local function saveProfile()
 end
 
 local function loadProfile(name)
-    for _, key in ipairs(BAR_KEYS) do db[key] = { unpack(db.profiles[name][key] or {}) } end
+    local p = copyLists(db.profiles[name])
+    for _, key in ipairs(BAR_KEYS) do db[key] = p[key] end
+    db.links = p.links
     db.profileKeys[charKey()] = name
     resolved = true
 end
@@ -149,6 +154,8 @@ local function ensureDB()
     db.pos.utilities = db.pos.utilities or { "CENTER", 0, -220 }
     db.debuffs = db.debuffs or {}
     db.pos.debuffs = db.pos.debuffs or { "CENTER", 0, -320 }
+    db.links = db.links or {}                  -- combined icons, see slotsOf
+    for key in pairs(LINKABLE) do db.links[key] = db.links[key] or {} end
     db.buffDurations = db.buffDurations or {}   -- spellID -> seconds, learned out of combat
     db.minimap = db.minimap or { angle = 215, hide = false }
     -- Each bar has its own icon size and spacing. Older profiles had one pair
@@ -202,6 +209,7 @@ local function ensureDB()
             for _, key in ipairs(BAR_KEYS) do legacyLists[key] = db[key] end
         end
         for _, key in ipairs(BAR_KEYS) do db[key] = {} end
+        db.links = copyLists({}).links
     end
 end
 
@@ -253,6 +261,57 @@ local function contains(list, id)
     return nil
 end
 
+-- Combined icons. On the Buffs and Debuffs bars an entry can be combined with
+-- the one before it, and a run of combined entries draws as ONE icon, lit by
+-- whichever of them is up: seals, auras, aspects, stings, armors, anything of
+-- which only one is on at a time. db.links[key] lists the entries joined to
+-- the one before them; the bar lists stay plain lists of spell IDs.
+local function isLinked(key, id)
+    return LINKABLE[key] and contains(db.links[key], id) ~= nil or false
+end
+
+local function setLinked(key, id, on)
+    local links = LINKABLE[key] and db.links[key]
+    if not links then return end
+    local i = contains(links, id)
+    if on and not i then links[#links + 1] = id elseif not on and i then table.remove(links, i) end
+end
+
+-- The icons a bar draws, each the list of its entries.
+local function slotsOf(key)
+    local slots = {}
+    for _, id in ipairs(db[key]) do
+        if #slots > 0 and isLinked(key, id) then table.insert(slots[#slots], id)
+        else slots[#slots + 1] = { id } end
+    end
+    return slots
+end
+
+-- Take entry i off a bar. When it led a combined icon, the next entry takes its
+-- place instead of joining the icon before.
+local function removeEntry(key, i)
+    local list = db[key]
+    local id = list[i]
+    if id == nil then return end
+    if list[i + 1] and not isLinked(key, id) then setLinked(key, list[i + 1], false) end
+    setLinked(key, id, false)
+    table.remove(list, i)
+end
+
+-- Swap entry i with its neighbour. The first entry of a bar has nothing before
+-- it to be combined with.
+local function moveEntry(key, i, delta)
+    local list, j = db[key], i + delta
+    if list[i] == nil or list[j] == nil then return end
+    list[i], list[j] = list[j], list[i]
+    setLinked(key, list[1], false)
+end
+
+local function clearBar(key)
+    for i = #db[key], 1, -1 do db[key][i] = nil end
+    if LINKABLE[key] then db.links[key] = {} end
+end
+
 -- Icon frames -------------------------------------------------------------------
 
 local function canMoveRows()
@@ -291,29 +350,33 @@ end
 
 local function layoutRow(key)
     local row = rows[key]
-    local list = db[key]
     local size, gap = db.rowSize[key], db.rowSpacing[key]
-    local shown = 0
-    for i, id in ipairs(list) do
+    local slots = slotsOf(key)
+    for i, members in ipairs(slots) do
         local f = icons[key][i]
         if not f then
             f = newIcon(row)
             icons[key][i] = f
         end
-        if f.spellID ~= id then f.auraInstanceID = nil end
+        if f.head ~= members[1] then
+            -- A different spell in this place now: nothing known about the old one applies.
+            f.auraInstanceID, f.castAt, f.combatRemoved, f.casts, f.castIDs, f.spellID = nil, nil, nil, nil, nil, nil
+        end
+        f.head, f.members = members[1], members
+        -- f.spellID is the member shown: the one up, or the one up last.
+        local id = f.spellID and contains(members, f.spellID) and f.spellID or members[1]
         f.spellID = id
         f.icon:SetTexture(spellIcon(id))
         f:SetSize(size, size)
         f.name:SetText(spellName(id))
         f.name:SetShown(db.showNames)
         f:ClearAllPoints()
-        f:SetPoint("LEFT", row, "LEFT", shown * (size + gap), 0)
-        f.slot = shown
+        f:SetPoint("LEFT", row, "LEFT", (i - 1) * (size + gap), 0)
+        f.slot = i - 1
         f:Show()
-        shown = shown + 1
     end
-    for i = #list + 1, #icons[key] do icons[key][i]:Hide() end
-    row:SetSize(math.max(shown, 1) * (size + gap) - gap, size)
+    for i = #slots + 1, #icons[key] do icons[key][i]:Hide() end
+    row:SetSize(math.max(#slots, 1) * (size + gap) - gap, size)
     updateRowInteraction(key)
 end
 
@@ -589,11 +652,35 @@ local function showAnchorMenu(key)
     end)
 end
 
+-- Out of combat the bars can fade (db.fade = "fade") or hide ("hide"). They
+-- come back in combat and while you target something you can attack, and are
+-- always fully shown while the rows are unlocked or Edit Mode is open.
+local FADE_ALPHA = 0.3
+local inCombat = false
+
+local function targetIsEnemy()
+    if not (UnitExists and UnitCanAttack) then return false end
+    local ok, v = pcall(function() return UnitExists("target") and UnitCanAttack("player", "target") end)
+    if not ok then return false end
+    if secret(v) then return true end        -- cannot tell: show the bars rather than hide them wrongly
+    return v and true or false
+end
+
+local function applyFade()
+    if not db then return end
+    local alpha = 1
+    if db.fade and db.locked and not editModeActive and not inCombat and not targetIsEnemy() then
+        alpha = db.fade == "hide" and 0 or FADE_ALPHA
+    end
+    for _, key in ipairs(BAR_KEYS) do if rows[key] then rows[key]:SetAlpha(alpha) end end
+end
+
 local function updateRowInteractions(stopDragging)
     for _, key in ipairs(BAR_KEYS) do
         if stopDragging then stopRowDrag(key) end
         updateRowInteraction(key)
     end
+    applyFade()        -- locking, Edit Mode and combat all come through here
 end
 
 local function initEditMode()
@@ -850,22 +937,51 @@ local function packRow(key)
     end
 end
 
+-- This buff on the player, under any rank; nil when it is not up or cannot be read.
+local function playerAura(id)
+    -- In combat this call THROWS rather than returning nil, so it must be
+    -- protected or it burns the client's 100-error cap in under a minute.
+    local okA, a = pcall(C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID or function() end, id)
+    if not okA or secret(a) or (issecrettable and issecrettable(a)) then a = nil end
+    -- Not up under this exact ID: it may be up as another rank of the same spell.
+    if not a and siblings[id] then
+        for _, sid in ipairs(siblings[id]) do
+            if sid ~= id then
+                local okS, s = pcall(C_UnitAuras.GetPlayerAuraBySpellID, sid)
+                if okS and s and not secret(s) and not (issecrettable and issecrettable(s)) then return s end
+            end
+        end
+    end
+    return a
+end
+
+-- A combined icon wears the member that is up (or was last): its texture and name.
+local function showMember(f, id)
+    if f.spellID == id then return end
+    f.spellID = id
+    f.icon:SetTexture(spellIcon(id))
+    f.name:SetText(spellName(id))
+end
+
+-- Which entry of icon f spellID is: the same ID, or another rank of it by name.
+local function memberFor(f, spellID, name)
+    local members = f.members or { f.spellID }
+    for _, m in ipairs(members) do if m == spellID then return m end end
+    name = name or spellName(spellID)
+    for _, m in ipairs(members) do if spellName(m) == name then return m end end
+end
+
 local function updateBuffs()
     local globalRestricted = C_Secrets and C_Secrets.ShouldAurasBeSecret and C_Secrets.ShouldAurasBeSecret()
     for _, f in ipairs(icons.buffs) do
         if f:IsShown() and f.spellID then
-            local restricted = spellAuraSecret(f.spellID, globalRestricted)
-            -- In combat this call THROWS rather than returning nil, so it must be
-            -- protected or it burns the client's 100-error cap in under a minute.
-            local okA, a = pcall(C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID or function() end, f.spellID)
-            if not okA or secret(a) or (issecrettable and issecrettable(a)) then a = nil end
-            -- Not up under this exact ID: it may be up as another rank of the same spell.
-            if not a and siblings[f.spellID] then
-                for _, sid in ipairs(siblings[f.spellID]) do
-                    if sid ~= f.spellID then
-                        local okS, s = pcall(C_UnitAuras.GetPlayerAuraBySpellID, sid)
-                        if okS and s and not secret(s) and not (issecrettable and issecrettable(s)) then a = s break end
-                    end
+            -- A combined icon asks after each of its spells and shows the first one up.
+            local restricted, a = false, nil
+            for _, m in ipairs(f.members or { f.spellID }) do
+                if spellAuraSecret(m, globalRestricted) then restricted = true end
+                if not a then
+                    a = playerAura(m)
+                    if a then showMember(f, m) end
                 end
             end
             -- A spell-ID lookup may stop identifying an aura during combat. Only
@@ -959,15 +1075,22 @@ local function updateDebuffs()
     local tkey = targetKey()
     for _, f in ipairs(icons.debuffs) do
         if f:IsShown() and f.spellID then
-            f.casts = f.casts or {}
+            f.casts, f.castIDs = f.casts or {}, f.castIDs or {}
             local a, readable = nil, true
-            if tkey then a, readable = findTargetDebuff(f.spellID) end
+            if tkey then
+                -- A combined icon asks after each of its spells and shows the first on the target.
+                for _, m in ipairs(f.members or { f.spellID }) do
+                    local found, ok = findTargetDebuff(m)
+                    if not ok then readable = false end
+                    if found then a = found showMember(f, m) break end
+                end
+            end
             if a then
                 -- Keep a start time for this target. Hunter's Mark goes up BEFORE
                 -- the pull: the aura is readable then and unreadable once combat
                 -- starts, so a real start time is what carries the timer across.
                 if not secret(a.duration) and not secret(a.expirationTime) and (a.duration or 0) > 0 then
-                    f.casts[tkey] = a.expirationTime - a.duration
+                    f.casts[tkey], f.castIDs[tkey] = a.expirationTime - a.duration, f.spellID
                 end
                 drawAura(f, "target", a)
             else
@@ -975,6 +1098,7 @@ local function updateDebuffs()
                 -- ago and the aura has not landed yet (application lags the cast event).
                 if readable and tkey and f.casts[tkey] and GetTime() - f.casts[tkey] > 1 then f.casts[tkey] = nil end
                 local castAt = tkey and not readable and f.casts[tkey] or nil
+                if castAt and f.castIDs[tkey] then showMember(f, f.castIDs[tkey]) end   -- the spell cast on THIS target
                 local learned = auraDuration(f.spellID)
                 if castAt and learned and GetTime() > castAt + learned then
                     f.casts[tkey] = nil    -- our own timer says it ran out
@@ -1037,7 +1161,9 @@ local function onAuraEvent(unit, info)
         for _, a in ipairs(added) do
             if type(a) == "table" and not (issecrettable and issecrettable(a)) and not secret(a.spellId) then
                 for _, f in ipairs(icons.buffs) do
-                    if f.spellID == a.spellId then
+                    local m = f.spellID and memberFor(f, a.spellId)
+                    if m then
+                        showMember(f, m)
                         f.combatRemoved = nil
                         if not secret(a.auraInstanceID) then f.auraInstanceID = a.auraInstanceID end
                     end
@@ -1054,33 +1180,25 @@ ForeverCDM_AuraDebug = function(n) auraDebugLeft = n or 6 end
 -- Technique seen in Pirson-s-Addons/SealTimersForever (MIT).
 local function onPlayerCast(unit, _, spellID)
     if unit ~= "player" or spellID == nil or secret(spellID) then return end
-    local castName
+    local castName = spellName(spellID)
     for _, f in ipairs(icons.buffs) do
-        if f.spellID then
-            local hit = f.spellID == spellID
-            if not hit then
-                castName = castName or spellName(spellID)
-                hit = castName == spellName(f.spellID)
-            end
-            if hit then
-                f.castAt = GetTime()
-                f.combatRemoved = nil
-            end
+        local m = f.spellID and memberFor(f, spellID, castName)
+        if m then
+            -- Casting another spell of a combined icon replaced the one that was
+            -- up (a new seal replaces the old), so its known aura no longer counts.
+            if m ~= f.spellID then f.auraInstanceID = nil end
+            showMember(f, m)
+            f.castAt = GetTime()
+            f.combatRemoved = nil
         end
     end
     local tkey = targetKey()
     if not tkey then return end
     for _, f in ipairs(icons.debuffs) do
-        if f.spellID then
-            local hit = f.spellID == spellID
-            if not hit then
-                castName = castName or spellName(spellID)
-                hit = castName == spellName(f.spellID)
-            end
-            if hit then
-                f.casts = f.casts or {}
-                f.casts[tkey] = GetTime()
-            end
+        local m = f.spellID and memberFor(f, spellID, castName)
+        if m then
+            f.casts, f.castIDs = f.casts or {}, f.castIDs or {}
+            f.casts[tkey], f.castIDs[tkey] = GetTime(), m
         end
     end
 end
@@ -1094,6 +1212,7 @@ local function refreshAll()
     updateCooldowns("utilities")
     updateBuffs()
     updateDebuffs()
+    applyFade()
     persistSoon()      -- every settings change funnels through here
 end
 
@@ -1214,8 +1333,10 @@ local function encodeSettings(withDurations, withProfiles)
         table.sort(names)
         for _, name in ipairs(names) do
             local p = db.profiles[name]
+            local links = p.links or {}
             records[#records + 1] = table.concat({ encodeProfileName(name), table.concat(p.cds or {}, ","),
-                table.concat(p.utilities or {}, ","), table.concat(p.buffs or {}, ","), table.concat(p.debuffs or {}, ",") }, "~")
+                table.concat(p.utilities or {}, ","), table.concat(p.buffs or {}, ","), table.concat(p.debuffs or {}, ","),
+                table.concat(links.buffs or {}, ","), table.concat(links.debuffs or {}, ",") }, "~")
         end
         if #records > 0 then put("pf", table.concat(records, "|")) end
     end
@@ -1223,6 +1344,7 @@ local function encodeSettings(withDurations, withProfiles)
     put("hr", db.hideReady and "1" or "0")
     put("sn", db.showNames and "1" or "0")
     put("hi", db.hideInactive and "1" or "0")
+    put("fd", db.fade == "fade" and "1" or db.fade == "hide" and "2" or "0")
     put("mm", string.format("%d,%s", math.floor((db.minimap.angle or 215) + 0.5), db.minimap.hide and "1" or "0"))
     local sz, gp = {}, {}
     for i, key in ipairs(BAR_KEYS) do sz[i], gp[i] = db.rowSize[key], db.rowSpacing[key] end
@@ -1235,6 +1357,8 @@ local function encodeSettings(withDurations, withProfiles)
         put("p" .. tag, string.format("%s,%.1f,%.1f", tostring(p[1]), p[2] or 0, p[3] or 0))
         local a = db.anchors[key]
         if a then put("a" .. tag, string.format("%s,%.1f,%.1f", a[1], a[2], a[3])) end
+        local links = LINKABLE[key] and db.links[key]
+        if links and #links > 0 then put("l" .. tag, table.concat(links, ",")) end   -- lb, ld
     end
     if withDurations then
         local dur = {}
@@ -1266,6 +1390,7 @@ local function applySettings(s, full)
         db.hideReady = t.hr == "1"
         db.showNames = t.sn == "1"
         db.hideInactive = t.hi == "1"
+        db.fade = t.fd == "1" and "fade" or t.fd == "2" and "hide" or nil
         local angle, hide = (t.mm or ""):match("^(-?%d+),(%d)$")
         if angle then db.minimap.angle, db.minimap.hide = tonumber(angle), hide == "1" end
         local sz, gp = nums(t.sz), nums(t.gp)
@@ -1284,6 +1409,7 @@ local function applySettings(s, full)
         local list = t["i" .. key:sub(1, 1)]
         if list then db[key] = nums(list) end
     end
+    for key in pairs(LINKABLE) do db.links[key] = nums(t["l" .. key:sub(1, 1)]) end
     for id, dur in (t.d or ""):gmatch("(%d+):([%d%.]+)") do
         id = tonumber(id)
         if db.buffDurations[id] == nil then db.buffDurations[id] = tonumber(dur) end
@@ -1294,7 +1420,8 @@ local function applySettings(s, full)
         local name = fields[1] and decodeProfileName(fields[1])
         if #fields >= 4 and name ~= "" and not db.profiles[name] then     -- a loaded profile of that name is newer
             db.profiles[name] = { cds = nums(fields[2]), utilities = nums(fields[3]),
-                buffs = nums(fields[4]), debuffs = nums(fields[5]) }
+                buffs = nums(fields[4]), debuffs = nums(fields[5]),
+                links = { buffs = nums(fields[6]), debuffs = nums(fields[7]) } }
         end
     end
     return true, t.pn and t.pn ~= "" and decodeProfileName(t.pn) or nil
@@ -1480,8 +1607,11 @@ local function claimLegacy(old, keepWorking)
     if not keepWorking then
         if legacyLists and old == legacyListsName then
             for _, key in ipairs(BAR_KEYS) do db[key] = legacyLists[key] end   -- the very tables that were loaded
+            db.links = copyLists(db.profiles[name]).links
         else
-            for _, key in ipairs(BAR_KEYS) do db[key] = { unpack(db.profiles[name][key] or {}) } end
+            local p = copyLists(db.profiles[name])
+            for _, key in ipairs(BAR_KEYS) do db[key] = p[key] end
+            db.links = p.links
         end
     end
     legacyLists, legacyListsName, resolved = nil, nil, true
@@ -1599,6 +1729,12 @@ function ForeverCDM.SpellIcon(id) return spellIcon(id) end
 function ForeverCDM.Resolve(text) return resolveSpell(text) end
 function ForeverCDM.Contains(list, id) return contains(list, id) end
 function ForeverCDM.Auto() return autoPopulate() end
+function ForeverCDM.IsLinked(key, id) return isLinked(key, id) end
+function ForeverCDM.SetLinked(key, id, on) setLinked(key, id, on) end
+function ForeverCDM.CanLink(key) return LINKABLE[key] or false end
+function ForeverCDM.RemoveEntry(key, i) removeEntry(key, i) end
+function ForeverCDM.MoveEntry(key, i, delta) moveEntry(key, i, delta) end
+function ForeverCDM.ClearBar(key) clearBar(key) end
 
 function ForeverCDM.ProfileNames()
     local names = {}
@@ -1704,6 +1840,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         -- Did the client hand us saved settings? The beta did not (measured on build 69893).
         mirror.hadSV = type(ForeverCDMDB) == "table" and next(ForeverCDMDB) ~= nil
         ensureDB()
+        inCombat = InCombatLockdown and InCombatLockdown() and true or false   -- a /reload in combat
         buildRankIndex()          -- before resolveCharacter, which compares lists with the spellbook
         -- If UPDATE_MACROS already fired, the macro list is loaded and this read is final.
         local restored = mirrorLogin(mirror.macrosSeen)
@@ -1744,6 +1881,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         updateDebuffs()
     elseif event == "PLAYER_TARGET_CHANGED" then
         updateDebuffs()
+        applyFade()
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         onPlayerCast(...)
         updateBuffs()
@@ -1762,13 +1900,15 @@ ev:SetScript("OnEvent", function(self, event, ...)
         mirror.macrosSeen = true
         if db then lateMirror(true) end
     elseif event == "PLAYER_REGEN_DISABLED" then
+        inCombat = true
         updateRowInteractions(true)
     elseif event == "PLAYER_REGEN_ENABLED" then
+        inCombat = false
         for _, key in ipairs(BAR_KEYS) do if rows[key].pendingAnchor then applyPosition(key) end end
         updateRowInteractions(false)
         if mirror.deleteAfterCombat then mirror.deleteAfterCombat = nil deleteMirror() end
         if mirror.afterCombat then mirror.afterCombat = nil writeMirror() end
-        for _, f in ipairs(icons.debuffs) do f.casts = nil end    -- auras are readable again; drop the estimates
+        for _, f in ipairs(icons.debuffs) do f.casts, f.castIDs = nil, nil end   -- auras are readable again; drop the estimates
         updateDebuffs()
     elseif event == "ADDON_LOADED" or event == "PLAYER_ENTERING_WORLD" then
         if not (InCombatLockdown and InCombatLockdown()) then
@@ -1806,6 +1946,7 @@ local HELP = {
     "/fcdm unlock | lock     drag the rows, then lock",
     "/fcdm size [bar] <px>   icon size, all bars or one of cds|utility|buffs|debuffs. Same for /fcdm spacing",
     "/fcdm hideinactive on|off  hide buff and debuff icons until the aura is up (off: they stay dimmed)",
+    "/fcdm fade show|fade|hide  out of combat, keep, fade or hide the bars (back in combat or on an enemy target)",
     "/fcdm duration <spell> <sec>  set how long a buff or debuff lasts, if the addon could not work it out",
     "/fcdm mirror [on|off]   keep settings in a macro, because the beta client forgets them on restart",
     "/fcdm hideready on|off  hide cooldown icons while ready",
@@ -1839,7 +1980,7 @@ SlashCmdList.FOREVERCDM = function(msg)
         local removed = false
         for _, key in ipairs(BAR_KEYS) do
             local i = id and contains(db[key], id)
-            if i then table.remove(db[key], i) removed = true end
+            if i then removeEntry(key, i) removed = true end
         end
         refreshAll()
         say(removed and ("removed " .. spellName(id) .. ".") or "nothing tracked by that name.")
@@ -1905,6 +2046,14 @@ SlashCmdList.FOREVERCDM = function(msg)
     elseif cmd == "store" then
         -- What the settings macro runs if someone clicks it.
         say("this macro holds your Forever Cooldown Manager setup, because the beta client forgets addon settings. It is read automatically at login; clicking it does nothing. Turn it off with /fcdm mirror off.")
+
+    elseif cmd == "fade" then
+        local choice = ({ show = false, off = false, fade = "fade", on = "fade", hide = "hide" })[strlower(rest)]
+        if choice == nil then say("usage: /fcdm fade show|fade|hide  (what the bars do out of combat)") return end
+        db.fade = choice or nil
+        refreshAll()
+        if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
+        say("out of combat the bars will %s.", db.fade == "hide" and "hide" or db.fade == "fade" and "fade" or "stay shown")
 
     elseif cmd == "hideready" or cmd == "names" or cmd == "hideinactive" then
         local on = rest == "on" or rest == "1" or rest == "true"
