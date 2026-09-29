@@ -114,7 +114,7 @@ assert(icons.buffs[1].alpha == 0.25 and cooldown.calls[#cooldown.calls][1] == 'c
 icons.buffs[1].combatRemoved = nil
 icons.buffs[1].auraInstanceID = nil
 updateBuffs()
-assert(icons.buffs[1].alpha == 0.6 and cooldown.calls[#cooldown.calls][1] == 'clear', 'never-seen aura in combat is unknown')
+assert(icons.buffs[1].alpha == 0.25 and cooldown.calls[#cooldown.calls][1] == 'clear', 'never-seen aura in combat counts as not up')
 C_Secrets.ShouldAurasBeSecret = function() return false end
 updateBuffs()
 assert(icons.buffs[1].alpha == 0.25 and icons.buffs[1].auraInstanceID == nil, 'confirmed absence must clear cached instance')

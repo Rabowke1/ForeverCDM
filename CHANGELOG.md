@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.1 (2026-09-29)
+- **Buffs only show while they are up.** "Hide inactive auras" is now on for new installs (existing
+  setups keep their choice; tick it in `/fcdm`). In combat a tracked buff that was neither up before
+  the fight nor cast by you no longer lights up with a "?"; it counts as not up.
+- A buff that was up when combat started now disappears when the timer read before the fight runs
+  out, instead of staying lit until combat ends.
+- **Finishers show their real length.** Slice and Dice (and Rupture, Kidney Shot...) last longer per
+  combo point. The combo points spent are noted with the cast, and the timer comes from the length
+  measured for that many points, or else from the tooltip's per-point table. Before, a finisher first
+  cast in combat showed no timer at all, and later ones used whatever length was measured last.
+- Buffs cast in combat fall back to the tooltip's duration when none was measured yet, like debuffs.
+
 ## 0.8.0 (2026-09-26)
 - **Each character keeps its own tracked spells.** Saved settings are shared by every character
   on the account, so once the beta started loading them a paladin could open on a hunter's bars.

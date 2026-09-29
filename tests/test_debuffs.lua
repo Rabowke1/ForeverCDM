@@ -74,7 +74,7 @@ C_UnitAuras = {
     end,
 }
 
-ForeverCDMDB = { debuffs = { MARK, STING }, buffs = { PROC } }
+ForeverCDMDB = { debuffs = { MARK, STING }, buffs = { PROC }, hideInactive = false }
 assert(loadfile('ForeverCDM.lua'))('ForeverCDM')
 
 local function fire(event, ...)
