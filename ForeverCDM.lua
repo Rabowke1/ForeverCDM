@@ -1311,6 +1311,11 @@ ForeverCDM_AuraDebug = function(n) auraDebugLeft = n or 6 end
 -- a finisher spends them all. Returns, for a finisher, the points it used and
 -- whether the client said so (true) or they were counted (false). A count can
 -- be off (a dodged Sinister Strike still casts), so only a real one is learned.
+--
+-- The combat log would tell a dodged strike apart, but it is not for addons:
+-- MEASURED 2026-09-29 on Forever, registering COMBAT_LOG_EVENT_UNFILTERED
+-- blocks the addon ("the requested function is reserved for the Blizzard UI")
+-- and no entry ever arrives. pcall does not catch that, so do not register it.
 local function noteComboCast(spellID)
     local info = comboInfo(spellID)
     if not info then return nil end
