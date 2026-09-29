@@ -9,7 +9,6 @@ ignore:
   - LICENSE
   - README.md
   - tests
-  - fems-dashboard
 
 # No libraries, no externals. Two Lua files and a TOC.
 enable-nolib-creation: no
