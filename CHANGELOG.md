@@ -11,6 +11,14 @@
   measured for that many points, or else from the tooltip's per-point table. Before, a finisher first
   cast in combat showed no timer at all, and later ones used whatever length was measured last.
 - Buffs cast in combat fall back to the tooltip's duration when none was measured yet, like debuffs.
+- **Icons are centred on their bar** and spread evenly to both sides; hidden icons give up their
+  place, so the visible ones stay together in the middle. Applies to every bar.
+- **The Cooldowns bar only shows spells on cooldown.** "Hide ready cooldowns" is now on for new
+  installs (existing setups keep their choice; tick it in `/fcdm`). Ready spells and spells without
+  a cooldown leave the bar, like hidden auras, and all of them show while the rows are unlocked.
+- In combat, where the client hides cooldown timings, a ready spell no longer shows just because its
+  state is unreadable: the addon uses the time the cooldown was due before the fight, or your own
+  cast plus the cooldown length it learned out of combat (a spell with none is learned as none).
 
 ## 0.8.0 (2026-09-26)
 - **Each character keeps its own tracked spells.** Saved settings are shared by every character

@@ -32,7 +32,7 @@ local DEFAULTS = {
     utilities = {}, -- ordered list of utility spellIDs
     debuffs = {},   -- ordered list of spellIDs: your own debuffs on the target (Serpent Sting...)
     pos = { cds = { "CENTER", 0, -170 }, utilities = { "CENTER", 0, -220 }, buffs = { "CENTER", 0, -270 }, debuffs = { "CENTER", 0, -320 } },
-    hideReady = false,  -- hide cooldown icons that are ready (off by default: it is a manager, not an alert)
+    hideReady = true,   -- hide cooldown icons that are ready, so only spells on cooldown show
     hideInactive = true,  -- hide buff/debuff icons while the aura is not up (off: they stay dimmed)
     showNames = false,
 }
@@ -158,6 +158,7 @@ local function ensureDB()
     for key in pairs(LINKABLE) do db.links[key] = db.links[key] or {} end
     db.buffDurations = db.buffDurations or {}   -- spellID -> seconds, learned out of combat
     db.comboDurations = db.comboDurations or {} -- spellID -> { [combo points] = seconds }, for finishers
+    db.cdLengths = db.cdLengths or {}           -- spellID -> cooldown seconds (0: none), learned out of combat
     db.minimap = db.minimap or { angle = 215, hide = false }
     -- Each bar has its own icon size and spacing. Older profiles had one pair
     -- for all bars (db.size / db.spacing), which seeds the per-bar values once.
@@ -349,6 +350,32 @@ local function newIcon(parent)
     return f
 end
 
+-- Icons sit centred on their row and spread evenly to both sides. An icon the
+-- options hide (f.inactive: an aura not up, a cooldown that is ready) gives up
+-- its place, so the visible ones stay together in the middle. While the rows
+-- are unlocked everything keeps its place, so the bar can be seen while dragging.
+local function isHidden(key, f)
+    if not (f.inactive and db.locked) then return false end
+    if key == "buffs" or key == "debuffs" then return db.hideInactive and true or false end
+    return db.hideReady and true or false
+end
+
+local function packRow(key)
+    local size, gap = db.rowSize[key], db.rowSpacing[key]
+    local shown = {}
+    for _, f in ipairs(icons[key]) do
+        if f:IsShown() and not isHidden(key, f) then shown[#shown + 1] = f end
+    end
+    for i, f in ipairs(shown) do
+        local x = (i - 1 - (#shown - 1) / 2) * (size + gap)
+        if f.slot ~= i - 1 or f.slotX ~= x then
+            f.slot, f.slotX = i - 1, x
+            f:ClearAllPoints()
+            f:SetPoint("CENTER", rows[key], "CENTER", x, 0)
+        end
+    end
+end
+
 local function layoutRow(key)
     local row = rows[key]
     local size, gap = db.rowSize[key], db.rowSpacing[key]
@@ -362,7 +389,7 @@ local function layoutRow(key)
         if f.head ~= members[1] then
             -- A different spell in this place now: nothing known about the old one applies.
             f.auraInstanceID, f.castAt, f.combatRemoved, f.casts, f.castIDs, f.spellID = nil, nil, nil, nil, nil, nil
-            f.castCP, f.castCPs, f.expiresAt = nil, nil, nil
+            f.castCP, f.castCPs, f.expiresAt, f.cdCastAt, f.readyAt, f.inactive = nil, nil, nil, nil, nil, nil
         end
         f.head, f.members = members[1], members
         -- f.spellID is the member shown: the one up, or the one up last.
@@ -372,13 +399,12 @@ local function layoutRow(key)
         f:SetSize(size, size)
         f.name:SetText(spellName(id))
         f.name:SetShown(db.showNames)
-        f:ClearAllPoints()
-        f:SetPoint("LEFT", row, "LEFT", (i - 1) * (size + gap), 0)
-        f.slot = i - 1
+        f.slot, f.slotX = nil, nil          -- placed by packRow
         f:Show()
     end
     for i = #slots + 1, #icons[key] do icons[key][i]:Hide() end
     row:SetSize(math.max(#slots, 1) * (size + gap) - gap, size)
+    packRow(key)
     updateRowInteraction(key)
 end
 
@@ -763,10 +789,11 @@ local function updateItemIcon(f)
     local count = C_Item and C_Item.GetItemCount and C_Item.GetItemCount(itemID, false, true)   -- bags + equipped, counting charges
     local have = secret(count) or (count or 0) > 0
     f.icon:SetDesaturated(onCD or not have)
+    f.inactive = not have or (known and not onCD)
     if not have then
-        f:SetAlpha(db.hideReady and 0 or 0.35)          -- run out, or unequipped
+        f:SetAlpha(isHidden("cds", f) and 0 or 0.35)    -- run out, or unequipped
     else
-        f:SetAlpha((not db.hideReady or not known or onCD) and 1 or 0)
+        f:SetAlpha(isHidden("cds", f) and 0 or 1)
     end
     f.count:SetText((not secret(count) and (count or 0) > 1) and count or "")
 end
@@ -790,15 +817,37 @@ local function updateCooldowns(key)
                     else
                         f.cd:Clear()
                     end
+                    -- Lua may not read the timing, but it knows what we cast
+                    -- (onPlayerCast), how long this cooldown lasts (learned below)
+                    -- and when it was due before the timing went secret.
+                    local length = db.cdLengths[f.spellID]
+                    if f.cdCastAt and length then
+                        onCD = GetTime() < f.cdCastAt + length
+                        cooldownStateKnown = true
+                    elseif not f.cdCastAt and f.readyAt then
+                        onCD = GetTime() < f.readyAt
+                        cooldownStateKnown = true
+                    end
                 else
                     local modRate = not secret(c.modRate) and (c.modRate or 1) or 1
                     cooldownStateKnown = not secret(c.isEnabled)
                     local enabled = cooldownStateKnown and c.isEnabled ~= false
                     f.cd:SetCooldown(c.startTime or 0, c.duration or 0, modRate)
                     onCD = (c.duration or 0) > 1.5 and enabled
+                    -- Learn the cooldown's length, and learn "none" from a cast
+                    -- that started no more than the global cooldown.
+                    if onCD then
+                        if db.cdLengths[f.spellID] ~= c.duration then db.cdLengths[f.spellID] = c.duration end
+                        f.cdCastAt = nil
+                    elseif f.cdCastAt and GetTime() - f.cdCastAt >= 0.5 then
+                        if cooldownStateKnown then db.cdLengths[f.spellID] = 0 end
+                        f.cdCastAt = nil
+                    end
+                    f.readyAt = onCD and (c.startTime or 0) + (c.duration or 0) or 0
                 end
                 f.icon:SetDesaturated(onCD)
-                f:SetAlpha((not db.hideReady or not cooldownStateKnown or onCD) and 1 or 0)
+                f.inactive = cooldownStateKnown and not onCD
+                f:SetAlpha(isHidden(key or "cds", f) and 0 or 1)
             end
             local ch = C_Spell and C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(f.spellID)
             if ch and not secret(ch.maxCharges) and (ch.maxCharges or 0) > 1 and not secret(ch.currentCharges) then
@@ -808,6 +857,7 @@ local function updateCooldowns(key)
             end
         end
     end
+    packRow(key or "cds")
 end
 
 -- Spell ranks. Forever lists every rank of a spell as its own spellbook entry
@@ -979,28 +1029,10 @@ end
 -- visible either way, so there is something to see while dragging.
 local function drawInactive(f)
     f.inactive = true
-    f:SetAlpha((db.hideInactive and db.locked) and 0 or 0.25)
+    f:SetAlpha(isHidden("buffs", f) and 0 or 0.25)
     f.icon:SetDesaturated(true)
     f.cd:Clear()
     f.count:SetText("")
-end
-
--- With "hide inactive" on, close the gaps: visible icons slide left so one
--- active proc does not float in the middle of an empty bar.
-local function packRow(key)
-    local size, gap = db.rowSize[key], db.rowSpacing[key]
-    local collapse = db.hideInactive and db.locked
-    local n = 0
-    for _, f in ipairs(icons[key]) do
-        if f:IsShown() and not (collapse and f.inactive) then
-            if f.slot ~= n then
-                f.slot = n
-                f:ClearAllPoints()
-                f:SetPoint("LEFT", rows[key], "LEFT", n * (size + gap), 0)
-            end
-            n = n + 1
-        end
-    end
 end
 
 -- This buff on the player, under any rank; nil when it is not up or cannot be read.
@@ -1263,6 +1295,11 @@ local function onPlayerCast(unit, _, spellID)
             f.castCP = cp
             f.expiresAt = nil
             f.combatRemoved = nil
+        end
+    end
+    for _, key in ipairs({ "cds", "utilities" }) do
+        for _, f in ipairs(icons[key]) do
+            if f.spellID and f.spellID > 0 and memberFor(f, spellID, castName) then f.cdCastAt = GetTime() end
         end
     end
     local tkey = targetKey()
@@ -1962,6 +1999,8 @@ ev:SetScript("OnEvent", function(self, event, ...)
         applyFade()
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         onPlayerCast(...)
+        updateCooldowns("cds")
+        updateCooldowns("utilities")
         updateBuffs()
         updateDebuffs()
     elseif event == "PLAYER_LOGOUT" then
@@ -2004,7 +2043,10 @@ ev:SetScript("OnEvent", function(self, event, ...)
 end)
 
 -- Light periodic refresh so buff swipes stay honest across secret transitions.
-C_Timer.NewTicker(0.5, function() if db then updateBuffs() updateDebuffs() end end)
+-- Cooldowns too: in combat their end can be one we estimate (see updateCooldowns).
+C_Timer.NewTicker(0.5, function()
+    if db then updateCooldowns("cds") updateCooldowns("utilities") updateBuffs() updateDebuffs() end
+end)
 
 -- Slash ------------------------------------------------------------------------------
 

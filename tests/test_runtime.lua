@@ -135,7 +135,7 @@ C_SpellBook = {
 }
 local oldCDs, oldBuffs = {102, 101}, {101}
 local oldPosition = {'CENTER', 7, -244}
-ForeverCDMDB = { cds = oldCDs, buffs = oldBuffs, pos = { cds = oldPosition, buffs = {'CENTER', 6, -195} }, size = 42, locked = true }
+ForeverCDMDB = { cds = oldCDs, buffs = oldBuffs, pos = { cds = oldPosition, buffs = {'CENTER', 6, -195} }, size = 42, locked = true, hideReady = false }
 assert(loadfile('ForeverCDM.lua'))('ForeverCDM')
 assert(loadfile('ForeverCDM_UI.lua'))('ForeverCDM')
 local function fire(event)
