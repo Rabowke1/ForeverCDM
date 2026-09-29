@@ -35,7 +35,6 @@ jobs:
           lua5.4 tests/test_combine.lua
           lua5.4 tests/test_finishers.lua
           lua5.4 tests/test_cooldown_bar.lua
-          lua5.4 tests/test_combat_log.lua
 
       - name: Package and upload
         uses: BigWigsMods/packager@v2

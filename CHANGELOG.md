@@ -1,14 +1,5 @@
 # Changelog
 
-## 0.8.2 (2026-09-29)
-- **The combat log sharpens the combo point count**, where the client lets addons read it. A builder
-  that missed, was dodged or parried no longer counts, a dodged finisher keeps its points, and where
-  the log reports combo point gains (Seal Fate crits...) those are counted instead of the tooltips.
-  Newer addon rules may keep the log from addons; then the count goes by casts as before.
-- A debuff whose cast missed (a resisted Serpent Sting, a dodged Rupture) starts no timer.
-- `/fcdm combo` shows where the count comes from and whether the combat log is readable. Run it in
-  combat after a few builders.
-
 ## 0.8.1 (2026-09-29)
 - **Buffs only show while they are up.** "Hide inactive auras" is now on for new installs (existing
   setups keep their choice; tick it in `/fcdm`). In combat a tracked buff that was neither up before
