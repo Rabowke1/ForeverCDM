@@ -390,6 +390,7 @@ local function layoutRow(key)
             -- A different spell in this place now: nothing known about the old one applies.
             f.auraInstanceID, f.castAt, f.combatRemoved, f.casts, f.castIDs, f.spellID = nil, nil, nil, nil, nil, nil
             f.castCP, f.castCPs, f.expiresAt, f.cdCastAt, f.readyAt, f.inactive = nil, nil, nil, nil, nil, nil
+            f.castCPSure, f.castCPSures = nil, nil
         end
         f.head, f.members = members[1], members
         -- f.spellID is the member shown: the one up, or the one up last.
@@ -919,24 +920,39 @@ local function spellAuraSecret(id, globalRestricted)
     return true
 end
 
--- Finishers (Slice and Dice, Rupture, Kidney Shot...) last longer per combo
--- point, and their tooltip lists it line by line ("1 point  : 9 seconds").
--- Returns { [points] = seconds }, or nil for a spell without such a table.
-local comboTables = {}
-local function comboTable(id)
-    if comboTables[id] ~= nil then return comboTables[id] or nil end
+-- What a spell does with combo points, read from its tooltip (English or
+-- German): builders award some ("Awards 1 combo point", "Gewährt 1
+-- Combopunkt"); finishers spend them, and the ones that last longer per point
+-- (Slice and Dice, Rupture, Kidney Shot...) list it line by line
+-- ("1 point  : 9 seconds"). Returns { awards = n, finisher = bool,
+-- table = { [points] = seconds } or nil }, or nil while the text is not loaded.
+local comboInfos = {}
+local function comboInfo(id)
+    if comboInfos[id] then return comboInfos[id] end
     local d = C_Spell and C_Spell.GetSpellDescription and C_Spell.GetSpellDescription(id)
     if type(d) ~= "string" or secret(d) or d == "" then return nil end   -- not loaded yet: ask again later
-    local t
+    local info = { awards = 0, finisher = d:find("[Ff]inishing") ~= nil }
     for line in d:gmatch("[^\r\n]+") do
-        local cp, sec = line:match("(%d+)%s*points?%s*:.-(%d+)%s*sec")
+        local cp = line:match("(%d+)%s*[Pp]oints?%s*:") or line:match("(%d+)%s*[Pp]unkte?%s*:")
         if cp then
-            t = t or {}
-            t[tonumber(cp)] = tonumber(sec)
+            info.finisher = true
+            local sec = line:match(":.-(%d+)%s*[Ss]ec") or line:match(":.-(%d+)%s*[Ss]ek")
+            if sec then
+                info.table = info.table or {}
+                info.table[tonumber(cp)] = tonumber(sec)
+            end
         end
     end
-    comboTables[id] = t or false
-    return t
+    if not info.finisher then
+        info.awards = tonumber(d:match("(%d+) [Cc]ombo ?[Pp]oints?") or d:match("(%d+) [Cc]ombopunkte?")) or 0
+    end
+    comboInfos[id] = info
+    return info
+end
+
+local function comboTable(id)
+    local info = comboInfo(id)
+    return info and info.table
 end
 
 -- How long does this aura last? cp: the combo points it was cast with, for a
@@ -960,6 +976,10 @@ end
 -- Combo points. A finisher spends them, and the cast event and the power
 -- update can come in either order, so the count spent a moment ago counts too.
 local comboNow, comboSpent, comboSpentAt = 0, 0, nil
+-- On Forever the combo point count is secret, so it is also counted from our
+-- own casts, which stay readable (noteComboCast). comboCount is that count
+-- (synced to the real one whenever it can be read), on target comboTarget.
+local comboCount, comboTarget = 0, nil
 
 local function readComboPoints()
     local ok, n = false, nil
@@ -972,12 +992,18 @@ end
 
 local function updateComboPoints()
     local n = readComboPoints()
-    if n == nil then return end
+    if n == nil then                 -- secret now: a count read earlier no longer holds
+        comboNow, comboSpentAt = 0, nil
+        return
+    end
     if n < comboNow then comboSpent, comboSpentAt = comboNow, GetTime() end
     comboNow = n
+    local guid = UnitGUID and UnitGUID("target")
+    comboCount, comboTarget = n, not secret(guid) and guid or nil
 end
 
--- The combo points the finisher just cast used, or nil when unknown.
+-- The combo points the finisher just cast used, read from the client, or nil
+-- when the client does not say.
 local function castComboPoints()
     updateComboPoints()
     if comboNow > 0 then return comboNow end
@@ -985,7 +1011,7 @@ local function castComboPoints()
 end
 
 -- An aura that is up and readable: full brightness, real timer, stack count.
-local function drawAura(f, unit, a, cp)
+local function drawAura(f, unit, a, cp, cpSure)
     f.inactive = false
     f:SetAlpha(1)
     f.icon:SetDesaturated(false)
@@ -1013,7 +1039,7 @@ local function drawAura(f, unit, a, cp)
             db.buffDurations[f.spellID] = dur
             persistSoon()
         end
-        if cp and cp > 0 then
+        if cp and cp > 0 and cpSure then
             local byCP = db.comboDurations[f.spellID] or {}
             db.comboDurations[f.spellID] = byCP
             if byCP[cp] ~= dur then byCP[cp] = dur persistSoon() end
@@ -1093,7 +1119,7 @@ local function updateBuffs()
                 if not secret(a.auraInstanceID) and a.auraInstanceID ~= nil then
                     f.auraInstanceID = a.auraInstanceID
                 end
-                drawAura(f, "player", a, f.castCP)
+                drawAura(f, "player", a, f.castCP, f.castCPSure)
             elseif restricted then
                 -- In combat this client refuses EVERY aura read to addon code
                 -- ("Auras cannot be accessed when secret while tainted"), so the
@@ -1194,7 +1220,7 @@ local function updateDebuffs()
                 if not secret(a.duration) and not secret(a.expirationTime) and (a.duration or 0) > 0 then
                     f.casts[tkey], f.castIDs[tkey] = a.expirationTime - a.duration, f.spellID
                 end
-                drawAura(f, "target", a, f.castCPs[tkey])
+                drawAura(f, "target", a, f.castCPs[tkey], f.castCPSures and f.castCPSures[tkey])
             else
                 -- Readable and absent: it really dropped, unless the cast was a moment
                 -- ago and the aura has not landed yet (application lags the cast event).
@@ -1280,10 +1306,32 @@ ForeverCDM_AuraDebug = function(n) auraDebugLeft = n or 6 end
 -- tracked buff we cast ourselves can be followed by its cast event instead.
 -- Matching by name as well as ID covers other ranks of the same spell.
 -- Technique seen in Pirson-s-Addons/SealTimersForever (MIT).
+-- Keep the combo point count from our own casts: a builder adds what its
+-- tooltip awards (points belong to one target, so a new target starts over),
+-- a finisher spends them all. Returns, for a finisher, the points it used and
+-- whether the client said so (true) or they were counted (false). A count can
+-- be off (a dodged Sinister Strike still casts), so only a real one is learned.
+local function noteComboCast(spellID)
+    local info = comboInfo(spellID)
+    if not info then return nil end
+    if info.finisher then
+        local cp, sure = castComboPoints(), true
+        if not cp and comboCount > 0 then cp, sure = comboCount, false end
+        comboCount = 0
+        return cp, sure
+    elseif info.awards > 0 then
+        local guid = UnitGUID and UnitGUID("target")
+        if secret(guid) then guid = nil end
+        if guid ~= comboTarget then comboCount = 0 end
+        comboTarget = guid
+        comboCount = math.min(5, comboCount + info.awards)
+    end
+end
+
 local function onPlayerCast(unit, _, spellID)
     if unit ~= "player" or spellID == nil or secret(spellID) then return end
     local castName = spellName(spellID)
-    local cp = comboTable(spellID) and castComboPoints() or nil   -- only finishers care
+    local cp, cpSure = noteComboCast(spellID)
     for _, f in ipairs(icons.buffs) do
         local m = f.spellID and memberFor(f, spellID, castName)
         if m then
@@ -1292,7 +1340,7 @@ local function onPlayerCast(unit, _, spellID)
             if m ~= f.spellID then f.auraInstanceID = nil end
             showMember(f, m)
             f.castAt = GetTime()
-            f.castCP = cp
+            f.castCP, f.castCPSure = cp, cpSure
             f.expiresAt = nil
             f.combatRemoved = nil
         end
@@ -1309,6 +1357,8 @@ local function onPlayerCast(unit, _, spellID)
         if m then
             f.casts, f.castIDs, f.castCPs = f.casts or {}, f.castIDs or {}, f.castCPs or {}
             f.casts[tkey], f.castIDs[tkey], f.castCPs[tkey] = GetTime(), m, cp
+            f.castCPSures = f.castCPSures or {}
+            f.castCPSures[tkey] = cpSure
         end
     end
 end
@@ -2025,7 +2075,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         updateRowInteractions(false)
         if mirror.deleteAfterCombat then mirror.deleteAfterCombat = nil deleteMirror() end
         if mirror.afterCombat then mirror.afterCombat = nil writeMirror() end
-        for _, f in ipairs(icons.debuffs) do f.casts, f.castIDs, f.castCPs = nil, nil, nil end   -- auras are readable again; drop the estimates
+        for _, f in ipairs(icons.debuffs) do f.casts, f.castIDs, f.castCPs, f.castCPSures = nil, nil, nil, nil end   -- auras are readable again; drop the estimates
         updateDebuffs()
     elseif event == "ADDON_LOADED" or event == "PLAYER_ENTERING_WORLD" then
         if not (InCombatLockdown and InCombatLockdown()) then

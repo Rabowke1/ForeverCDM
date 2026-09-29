@@ -46,13 +46,14 @@ local now = 1000
 GetTime = function() return now end
 
 -- Slice and Dice: a finisher whose length depends on the combo points spent.
-local SND, OTHER = 5171, 300
-local names = { [SND] = 'Slice and Dice', [OTHER] = 'Sinister Strike' }
+local SND, OTHER, CHEAP = 5171, 300, 1833
+local names = { [SND] = 'Slice and Dice', [OTHER] = 'Sinister Strike', [CHEAP] = 'Cheap Shot' }
 local descriptions = {
     [SND] = 'Finishing move that increases melee attack speed by 20%.  Lasts longer per combo point:\r\n'
         .. '   1 point  : 9 seconds\r\n   2 points: 12 seconds\r\n   3 points: 15 seconds\r\n'
         .. '   4 points: 18 seconds\r\n   5 points: 21 seconds',
-    [OTHER] = 'An instant strike that causes damage.',
+    [OTHER] = 'An instant strike that causes 3 damage in addition to your normal weapon damage.  Awards 1 combo point.',
+    [CHEAP] = 'Stuns the target for 4 sec.  Must be stealthed.  Awards 2 combo points.',
 }
 C_Spell = {
     GetSpellName = function(id) return names[id] end,
@@ -62,8 +63,13 @@ C_Spell = {
     GetSpellCharges = function() return nil end,
 }
 Enum = { PowerType = { ComboPoints = 4 } }
-local combo = 0
-UnitPower = function(unit, power) assert(unit == 'player' and power == 4) return combo end
+local combo, comboSecret = 0, false
+local SECRET = {}
+issecretvalue = function(v) return v == SECRET end
+UnitPower = function(unit, power) assert(unit == 'player' and power == 4) if comboSecret then return SECRET end return combo end
+local target = 'mob-A'
+UnitGUID = function(unit) if unit == 'target' then return target end return 'Player-1' end
+UnitExists = function(unit) return unit == 'target' end
 
 local aurasLocked, aura = false, nil
 C_Secrets = {
@@ -157,4 +163,38 @@ assert(icon.alpha == 0, 'expired again')
 fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', OTHER)
 assert(icon.alpha == 0, 'another spell must not show Slice and Dice')
 
-print('finisher durations by combo point, hidden unused buffs and expiry in combat checks passed')
+-- 9. On Forever the combo point count is secret. It is counted from our own
+--    casts instead: three Sinister Strikes, then Slice and Dice for 3 points.
+comboSecret = true
+now = 1400
+target = 'mob-C'      -- a fresh target: step 8's point stays on mob-A
+for _ = 1, 3 do fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', OTHER) end
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', SND)
+assert(icon.alpha == 0.85 and icon.cd.cdStart == 1400 and icon.cd.cdDur == 15,
+    'counted 3 points should give 15 s, got ' .. tostring(icon.cd.cdDur))
+-- A counted value may be off (a dodged strike still casts), so it is not learned.
+aurasLocked = false
+aura = { auraInstanceID = 10, duration = 16, expirationTime = now + 16, applications = 0 }
+fire('UNIT_AURA', 'player', { isFullUpdate = true })
+assert(ForeverCDMDB.comboDurations[SND][3] == nil, 'a counted combo point value must not be learned')
+aura, aurasLocked = nil, true
+fire('UNIT_AURA', 'player', nil)
+
+-- 10. The finisher spent them: the next count starts at zero. Cheap Shot awards
+--     two, and the count stops at five.
+now = 1500
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', CHEAP)
+for _ = 1, 4 do fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', OTHER) end
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', SND)
+assert(icon.cd.cdStart == 1500 and icon.cd.cdDur == 21, 'counted 5 points (capped) should give 21 s, got ' .. tostring(icon.cd.cdDur))
+
+-- 11. Combo points belong to a target: points built on another one do not count.
+now = 1600
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', OTHER)
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', OTHER)
+target = 'mob-B'
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', OTHER)
+fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', SND)
+assert(icon.cd.cdStart == 1600 and icon.cd.cdDur == 9, 'only the point on the new target counts: 9 s, got ' .. tostring(icon.cd.cdDur))
+
+print('finisher durations by combo point, counted combo points, hidden unused buffs and expiry in combat checks passed')

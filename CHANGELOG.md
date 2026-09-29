@@ -11,6 +11,10 @@
   measured for that many points, or else from the tooltip's per-point table. Before, a finisher first
   cast in combat showed no timer at all, and later ones used whatever length was measured last.
 - Buffs cast in combat fall back to the tooltip's duration when none was measured yet, like debuffs.
+- **Combo points are counted** where the client keeps them secret (Forever): each builder you cast
+  adds what its tooltip awards ("Awards 1 combo point"), a new target starts over, a finisher spends
+  them. A counted value can be off (a dodged strike still casts), so it picks the timer but is never
+  stored as a learned length. English and German tooltips are understood.
 - **Icons are centred on their bar** and spread evenly to both sides; hidden icons give up their
   place, so the visible ones stay together in the middle. Applies to every bar.
 - **The Cooldowns bar only shows spells on cooldown.** "Hide ready cooldowns" is now on for new
