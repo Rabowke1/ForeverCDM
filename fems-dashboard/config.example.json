@@ -1,0 +1,12 @@
+{
+  "fems_url": "http://192.168.178.50",
+  "username": "x",
+  "password": "user",
+  "poll_seconds": 5,
+  "store_seconds": 60,
+  "listen_host": "127.0.0.1",
+  "listen_port": 8080,
+  "database": "fems.sqlite",
+  "timeout_seconds": 8,
+  "demo": false
+}

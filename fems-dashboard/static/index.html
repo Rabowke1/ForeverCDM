@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FEMS Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="vendor/chart.umd.js"></script>
+</head>
+<body>
+<header class="top">
+  <h1>PV-Anlage</h1>
+  <div class="status" id="status"><span class="dot"></span><span id="status-text">Verbinde …</span></div>
+</header>
+
+<main>
+  <section class="flow" aria-label="Aktuelle Leistung">
+    <article class="tile" data-series="1">
+      <h2><span class="swatch"></span>Erzeugung</h2>
+      <p class="value" id="v-production">–</p>
+      <p class="sub">Photovoltaik</p>
+    </article>
+    <article class="tile" data-series="2">
+      <h2><span class="swatch"></span>Verbrauch</h2>
+      <p class="value" id="v-consumption">–</p>
+      <p class="sub">Haus</p>
+    </article>
+    <article class="tile" data-series="3">
+      <h2><span class="swatch"></span>Batterie</h2>
+      <p class="value" id="v-ess">–</p>
+      <p class="sub" id="v-ess-dir">–</p>
+      <div class="soc" role="meter" aria-label="Ladezustand" aria-valuemin="0" aria-valuemax="100" id="soc-meter">
+        <div class="soc-fill" id="soc-fill"></div>
+      </div>
+      <p class="sub">Ladezustand <strong id="v-soc">–</strong></p>
+    </article>
+    <article class="tile" data-series="4">
+      <h2><span class="swatch"></span>Netz</h2>
+      <p class="value" id="v-grid">–</p>
+      <p class="sub" id="v-grid-dir">–</p>
+    </article>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Heute</h2>
+    </div>
+    <div class="stats">
+      <div><span class="label">PV-Ertrag</span><span class="num" id="t-production">–</span></div>
+      <div><span class="label">Verbrauch</span><span class="num" id="t-consumption">–</span></div>
+      <div><span class="label">Netzbezug</span><span class="num" id="t-grid_buy">–</span></div>
+      <div><span class="label">Einspeisung</span><span class="num" id="t-grid_sell">–</span></div>
+      <div><span class="label">Autarkie</span><span class="num" id="t-autarky">–</span></div>
+      <div><span class="label">Eigenverbrauch</span><span class="num" id="t-self_consumption">–</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Leistungsverlauf</h2>
+      <div class="controls">
+        <button type="button" id="day-prev" aria-label="Vorheriger Tag">‹</button>
+        <input type="date" id="day-input">
+        <button type="button" id="day-next" aria-label="Nächster Tag">›</button>
+        <button type="button" id="day-today">Heute</button>
+      </div>
+    </div>
+    <div class="legend" id="power-legend"></div>
+    <div class="chart tall"><canvas id="power-chart"></canvas></div>
+    <h3>Ladezustand der Batterie</h3>
+    <div class="chart short"><canvas id="soc-chart"></canvas></div>
+    <p class="hint">Netz: + Bezug / − Einspeisung · Batterie: + Entladen / − Laden</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Energiebilanz</h2>
+      <div class="controls segmented" role="group" aria-label="Zeitraum">
+        <button type="button" data-group="day" class="active">Tage</button>
+        <button type="button" data-group="month">Monate</button>
+        <button type="button" data-group="year">Jahre</button>
+      </div>
+    </div>
+    <div class="legend" id="energy-legend"></div>
+    <div class="chart tall"><canvas id="energy-chart"></canvas></div>
+    <details>
+      <summary>Tabelle anzeigen</summary>
+      <div class="table-wrap"><table id="energy-table"></table></div>
+    </details>
+  </section>
+</main>
+
+<footer>Daten: FENECON FEMS · REST/JSON-API · lokal gespeichert</footer>
+<script src="app.js"></script>
+</body>
+</html>
