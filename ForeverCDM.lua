@@ -1310,27 +1310,120 @@ ForeverCDM_AuraDebug = function(n) auraDebugLeft = n or 6 end
 -- tooltip awards (points belong to one target, so a new target starts over),
 -- a finisher spends them all. Returns, for a finisher, the points it used and
 -- whether the client said so (true) or they were counted (false). A count can
--- be off (a dodged Sinister Strike still casts), so only a real one is learned.
+-- be off, so only a real one is learned as a length.
+--
+-- The combat log, where the client lets addons read it, makes the count
+-- better (onCombatLog): a builder that missed, was dodged or parried awarded
+-- nothing, a finisher that missed spent nothing, and where the log reports
+-- combo point gains themselves (Seal Fate crits...) those are counted instead
+-- of the tooltips. The log and the cast event can come in either order, so
+-- each side remembers its last one for a moment (COMBO_MATCH seconds).
+local COMBO_MATCH = 0.5
+local lastComboCast                  -- { name =, at =, added = / spent = }
+local missedAt = {}                  -- spell name -> when the log said our cast of it missed
+local comboFromLog = false           -- the log reports gains: count those, not casts
+local comboLog = { state = "not checked", mine = 0, misses = 0, gains = 0 }
+
+-- Did the log report this spell missing a moment ago, before its cast event?
+local function recentMiss(name)
+    local at = missedAt[name]
+    return at ~= nil and GetTime() - at < COMBO_MATCH
+end
+
+local function comboTargetNow()
+    local guid = UnitGUID and UnitGUID("target")
+    if secret(guid) then guid = nil end
+    if guid ~= comboTarget then comboCount = 0 end
+    comboTarget = guid
+end
+
 local function noteComboCast(spellID)
     local info = comboInfo(spellID)
     if not info then return nil end
+    local name = spellName(spellID)
     if info.finisher then
         local cp, sure = castComboPoints(), true
         if not cp and comboCount > 0 then cp, sure = comboCount, false end
+        if recentMiss(name) then return nil end            -- it missed: nothing spent
+        lastComboCast = { name = name, at = GetTime(), spent = comboCount }
         comboCount = 0
         return cp, sure
     elseif info.awards > 0 then
-        local guid = UnitGUID and UnitGUID("target")
-        if secret(guid) then guid = nil end
-        if guid ~= comboTarget then comboCount = 0 end
-        comboTarget = guid
+        comboTargetNow()
+        if comboFromLog or recentMiss(name) then return nil end
+        local before = comboCount
         comboCount = math.min(5, comboCount + info.awards)
+        lastComboCast = { name = name, at = GetTime(), added = comboCount - before }
+    end
+end
+
+-- Outcomes that land nothing, so award no combo points and spend none.
+local MISSED = { MISS = true, DODGE = true, PARRY = true, IMMUNE = true, EVADE = true, DEFLECT = true, RESIST = true, REFLECT = true }
+
+-- Our spell missed. Take back what its cast event started a moment ago: the
+-- combo points it counted, and a debuff timer (a resisted Serpent Sting, a
+-- dodged Rupture). A cast event still to come sees it through recentMiss.
+local function onSpellMissed(spellID, name)
+    name = type(name) == "string" and not secret(name) and name or spellName(spellID)
+    missedAt[name] = GetTime()
+    comboLog.misses = comboLog.misses + 1
+    local c = lastComboCast
+    if c and c.name == name and GetTime() - c.at < COMBO_MATCH then
+        if c.added then comboCount = math.max(0, comboCount - c.added) end
+        if c.spent then comboCount = c.spent end
+        lastComboCast = nil
+    end
+    local tkey = targetKey()
+    for _, f in ipairs(icons.debuffs) do
+        local cast = tkey and f.casts and f.casts[tkey]
+        if cast and GetTime() - cast < COMBO_MATCH and f.castIDs[tkey] and spellName(f.castIDs[tkey]) == name then
+            f.casts[tkey] = nil
+        end
+    end
+end
+
+local function onComboGain(amount)
+    comboLog.gains = comboLog.gains + 1
+    local c = lastComboCast
+    if not comboFromLog and c and c.added and GetTime() - c.at < COMBO_MATCH then
+        -- The first gain the log reports: the cast it came from was already
+        -- counted by its tooltip, and from now on only the log counts.
+        comboCount = math.max(0, comboCount - c.added)
+        lastComboCast = nil
+    end
+    comboFromLog = true
+    comboTargetNow()
+    comboCount = math.min(5, comboCount + amount)
+end
+
+local function onCombatLog()
+    local get = CombatLogGetCurrentEventInfo or (C_CombatLog and C_CombatLog.GetCurrentEventInfo)
+    if not get then comboLog.state = "no combat log API" return end
+    local ok, e = pcall(function() return { get() } end)
+    if not ok then comboLog.state = "reading it is refused" return end
+    local sub, source = e[2], e[4]
+    if secret(sub) or secret(source) then comboLog.state = "its entries are secret" return end
+    comboLog.state = "readable"
+    if source == nil or source ~= playerGUID() then return end
+    comboLog.mine = comboLog.mine + 1
+    if sub == "SPELL_MISSED" then
+        local id, missType = e[12], e[15]
+        if not secret(id) and not secret(missType) and type(id) == "number" and MISSED[missType] then onSpellMissed(id, e[13]) end
+    elseif sub == "SPELL_ENERGIZE" then
+        local amount, powerType = e[15], e[17]
+        local combo = Enum and Enum.PowerType and Enum.PowerType.ComboPoints or 4
+        if not secret(amount) and not secret(powerType) and type(amount) == "number" and amount > 0
+            and (powerType == combo or powerType == "COMBO_POINTS") then onComboGain(amount) end
     end
 end
 
 local function onPlayerCast(unit, _, spellID)
     if unit ~= "player" or spellID == nil or secret(spellID) then return end
     local castName = spellName(spellID)
+    if recentMiss(castName) then                 -- the log already said it missed
+        noteComboCast(spellID)                   -- keeps the count's target, adds nothing
+        return
+    end
     local cp, cpSure = noteComboCast(spellID)
     for _, f in ipairs(icons.buffs) do
         local m = f.spellID and memberFor(f, spellID, castName)
@@ -2019,6 +2112,13 @@ ev:SetScript("OnEvent", function(self, event, ...)
         self:RegisterEvent("PLAYER_TARGET_CHANGED")
         self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         pcall(self.RegisterUnitEvent, self, "UNIT_POWER_FREQUENT", "player")   -- combo points (castComboPoints)
+        -- The combat log sharpens the counted combo points (onCombatLog). Newer
+        -- addon rules may not offer it at all; then the count goes by casts alone.
+        if pcall(self.RegisterEvent, self, "COMBAT_LOG_EVENT_UNFILTERED") then
+            comboLog.state = "registered, nothing received yet"
+        else
+            comboLog.state = "not offered to addons"
+        end
         updateComboPoints()
         self:RegisterEvent("SPELLS_CHANGED")
         self:RegisterEvent("PLAYER_LOGOUT")
@@ -2041,6 +2141,8 @@ ev:SetScript("OnEvent", function(self, event, ...)
         onAuraEvent(...)
         updateBuffs()
         updateDebuffs()
+    elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
+        onCombatLog()
     elseif event == "UNIT_POWER_FREQUENT" then
         updateComboPoints()
     elseif event == "PLAYER_TARGET_CHANGED" then
@@ -2118,6 +2220,7 @@ local HELP = {
     "/fcdm hideinactive on|off  hide buff and debuff icons until the aura is up (off: they stay dimmed)",
     "/fcdm fade show|fade|hide  out of combat, keep, fade or hide the bars (back in combat or on an enemy target)",
     "/fcdm duration <spell> <sec>  set how long a buff or debuff lasts, if the addon could not work it out",
+    "/fcdm combo             how combo points are counted, and whether the combat log helps",
     "/fcdm mirror [on|off]   keep settings in a macro, because the beta client forgets them on restart",
     "/fcdm hideready on|off  hide cooldown icons while ready",
     "/fcdm names on|off      show spell names under icons",
@@ -2325,6 +2428,14 @@ SlashCmdList.FOREVERCDM = function(msg)
             say("minimap button %s.", db.minimap.hide and "hidden" or "shown")
             if ForeverCDM_RefreshConfig then ForeverCDM_RefreshConfig() end
         end
+
+    elseif cmd == "combo" then
+        -- Where the combo point count comes from. Run it in combat after a few builders.
+        local real = readComboPoints()
+        say("combo points: client says %s | counted %d | gains from %s",
+            real and tostring(real) or "<secret>", comboCount, comboFromLog and "the combat log" or "builder tooltips")
+        say("  combat log: %s | your entries %d, misses %d, gains counted %d",
+            comboLog.state, comboLog.mine, comboLog.misses, comboLog.gains)
 
     elseif cmd == "auradebug" then
         ForeverCDM_AuraDebug(tonumber(rest) or 6)
