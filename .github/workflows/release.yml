@@ -33,6 +33,8 @@ jobs:
           lua5.4 tests/test_persist.lua
           lua5.4 tests/test_debuffs.lua
           lua5.4 tests/test_combine.lua
+          lua5.4 tests/test_finishers.lua
+          lua5.4 tests/test_cooldown_bar.lua
 
       - name: Package and upload
         uses: BigWigsMods/packager@v2

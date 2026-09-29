@@ -74,7 +74,7 @@ C_UnitAuras = {
     end,
 }
 
-ForeverCDMDB = { debuffs = { MARK, STING }, buffs = { PROC } }
+ForeverCDMDB = { debuffs = { MARK, STING }, buffs = { PROC }, hideInactive = false }
 assert(loadfile('ForeverCDM.lua'))('ForeverCDM')
 
 local function fire(event, ...)
@@ -127,23 +127,23 @@ now = 1026
 fire('UNIT_AURA', 'target', nil)
 assert(sting.alpha == 0.25 and sting.cd.cdDur == nil, 'expired estimate should dim the icon')
 
--- 7. Hide inactive auras: absent icons vanish and the visible one slides into the first slot.
+-- 7. Hide inactive auras: absent icons vanish and the visible one moves to the middle.
 locked = false
 mobDebuffs['mob-B'] = { { spellId = STING, name = 'Serpent Sting', duration = 15, expirationTime = now + 15, auraInstanceID = 6 } }
 SlashCmdList.FOREVERCDM('hideinactive on')
 assert(ForeverCDMDB.hideInactive == true, 'option was not stored')
 assert(mark.alpha == 0 and proc.alpha == 0, 'inactive buff and debuff icons should be hidden')
-assert(sting.alpha == 1 and sting.x == 0, 'the active debuff should be visible in the first slot')
+assert(sting.alpha == 1 and sting.x == 0, 'the only visible debuff should sit in the middle of its bar')
 
 -- 8. Unlocked rows show everything again, dimmed, so the bar can be seen while dragging.
 ForeverCDM_SetLocked(false)
 fire('UNIT_AURA', 'target', nil)
-assert(mark.alpha == 0.25 and mark.x == 0 and sting.x > 0, 'unlocked rows should show inactive icons in their own slots')
+assert(mark.alpha == 0.25 and mark.x < 0 and sting.x > 0 and mark.x == -sting.x, 'unlocked rows should show inactive icons in their own slots')
 ForeverCDM_SetLocked(true)
 
 -- 9. Option off again: dimmed, original order.
 SlashCmdList.FOREVERCDM('hideinactive off')
-assert(mark.alpha == 0.25 and mark.x == 0 and sting.x > 0, 'turning the option off should restore dim icons in list order')
+assert(mark.alpha == 0.25 and mark.x < 0 and sting.x > 0 and mark.x == -sting.x, 'turning the option off should restore dim icons in list order')
 
 -- 10. Hunter's Mark pattern: applied BEFORE the pull (readable), then combat locks
 --     aura reads. The timer must carry across on the real start time, not vanish.

@@ -71,7 +71,7 @@ C_UnitAuras = {
     end,
 }
 
-ForeverCDMDB = { buffs = { SEAL } }
+ForeverCDMDB = { buffs = { SEAL }, hideInactive = false }
 assert(loadfile('ForeverCDM.lua'))('ForeverCDM')
 
 local function fire(event, ...)
@@ -92,13 +92,13 @@ fire('UNIT_AURA', 'player', { isFullUpdate = true })
 assert(ForeverCDMDB.buffDurations[SEAL] == 30, 'duration was not learned out of combat')
 assert(icon.alpha == 1 and icon.cd.cdDur == 30, 'readable buff should draw its real timer')
 
--- 2. Buff drops out of combat, then combat starts: nothing known, so "?".
+-- 2. Buff drops out of combat, then combat starts: nothing says it is up, so it stays dim.
 auraUp = false
 fire('UNIT_AURA', 'player', { isFullUpdate = true })
 assert(icon.alpha == 0.25, 'absent buff should be dim out of combat')
 aurasLocked = true
 fire('UNIT_AURA', 'player', { isFullUpdate = true })
-assert(icon.count.textValue == '?', 'unknown buff in combat should show "?" before any cast')
+assert(icon.alpha == 0.25 and icon.count.textValue == '', 'buff never seen or cast should stay dim in combat, not lit')
 
 -- 3. We cast a DIFFERENT RANK in combat: the name match starts a timer from
 --    our own clock and the learned length. No aura read is involved.
@@ -106,7 +106,7 @@ now = 1010
 fire('UNIT_SPELLCAST_SUCCEEDED', 'player', 'cast-guid', SEAL_R2)
 assert(icon.alpha == 0.85, 'cast in combat should light the icon')
 assert(icon.cd.cdStart == 1010 and icon.cd.cdDur == 30, 'cast timer should be castAt + learned duration')
-assert(icon.count.textValue == '', '"?" should clear once we saw the cast')
+assert(icon.count.textValue == '', 'cast-based estimate shows no stack count')
 
 -- 4. An unrelated cast changes nothing.
 now = 1015

@@ -13,7 +13,10 @@ it shows nothing. ForeverCDM reads your spellbook and your auras directly and dr
 - Four icon rows: **Cooldowns**, **Utilities**, **Buffs**, **Debuffs**. Cooldown rows show Blizzard's
   swipe and charge counts; the Buffs row shows chosen auras while they are on you, and the Debuffs row
   shows your own debuffs on your target (Serpent Sting, Rend...), each with a remaining-time swipe.
-- Auras that are not up can stay dimmed on the bar, or be hidden until they happen (good for procs).
+- Auras that are not up are hidden until they happen (good for procs), or can stay dimmed on the bar.
+  Finishers such as Slice and Dice show the length that matches the combo points spent.
+- The Cooldowns and Utility bars show only spells on cooldown (option "Hide ready cooldowns"), and
+  every bar keeps its visible icons centred, spreading evenly to both sides.
 - Combine icons: spells of which only one is up at a time (seals, auras, aspects, stings) can share
   one icon that lights up with whichever is on. Use the + button in the Bars card.
 - Each character keeps its own tracked spells (see Tracking profiles below).

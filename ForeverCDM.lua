@@ -32,8 +32,8 @@ local DEFAULTS = {
     utilities = {}, -- ordered list of utility spellIDs
     debuffs = {},   -- ordered list of spellIDs: your own debuffs on the target (Serpent Sting...)
     pos = { cds = { "CENTER", 0, -170 }, utilities = { "CENTER", 0, -220 }, buffs = { "CENTER", 0, -270 }, debuffs = { "CENTER", 0, -320 } },
-    hideReady = false,  -- hide cooldown icons that are ready (off by default: it is a manager, not an alert)
-    hideInactive = false, -- hide buff/debuff icons while the aura is not up (off: they stay dimmed)
+    hideReady = true,   -- hide cooldown icons that are ready, so only spells on cooldown show
+    hideInactive = true,  -- hide buff/debuff icons while the aura is not up (off: they stay dimmed)
     showNames = false,
 }
 
@@ -157,6 +157,8 @@ local function ensureDB()
     db.links = db.links or {}                  -- combined icons, see slotsOf
     for key in pairs(LINKABLE) do db.links[key] = db.links[key] or {} end
     db.buffDurations = db.buffDurations or {}   -- spellID -> seconds, learned out of combat
+    db.comboDurations = db.comboDurations or {} -- spellID -> { [combo points] = seconds }, for finishers
+    db.cdLengths = db.cdLengths or {}           -- spellID -> cooldown seconds (0: none), learned out of combat
     db.minimap = db.minimap or { angle = 215, hide = false }
     -- Each bar has its own icon size and spacing. Older profiles had one pair
     -- for all bars (db.size / db.spacing), which seeds the per-bar values once.
@@ -348,6 +350,32 @@ local function newIcon(parent)
     return f
 end
 
+-- Icons sit centred on their row and spread evenly to both sides. An icon the
+-- options hide (f.inactive: an aura not up, a cooldown that is ready) gives up
+-- its place, so the visible ones stay together in the middle. While the rows
+-- are unlocked everything keeps its place, so the bar can be seen while dragging.
+local function isHidden(key, f)
+    if not (f.inactive and db.locked) then return false end
+    if key == "buffs" or key == "debuffs" then return db.hideInactive and true or false end
+    return db.hideReady and true or false
+end
+
+local function packRow(key)
+    local size, gap = db.rowSize[key], db.rowSpacing[key]
+    local shown = {}
+    for _, f in ipairs(icons[key]) do
+        if f:IsShown() and not isHidden(key, f) then shown[#shown + 1] = f end
+    end
+    for i, f in ipairs(shown) do
+        local x = (i - 1 - (#shown - 1) / 2) * (size + gap)
+        if f.slot ~= i - 1 or f.slotX ~= x then
+            f.slot, f.slotX = i - 1, x
+            f:ClearAllPoints()
+            f:SetPoint("CENTER", rows[key], "CENTER", x, 0)
+        end
+    end
+end
+
 local function layoutRow(key)
     local row = rows[key]
     local size, gap = db.rowSize[key], db.rowSpacing[key]
@@ -361,6 +389,8 @@ local function layoutRow(key)
         if f.head ~= members[1] then
             -- A different spell in this place now: nothing known about the old one applies.
             f.auraInstanceID, f.castAt, f.combatRemoved, f.casts, f.castIDs, f.spellID = nil, nil, nil, nil, nil, nil
+            f.castCP, f.castCPs, f.expiresAt, f.cdCastAt, f.readyAt, f.inactive = nil, nil, nil, nil, nil, nil
+            f.castCPSure, f.castCPSures = nil, nil
         end
         f.head, f.members = members[1], members
         -- f.spellID is the member shown: the one up, or the one up last.
@@ -370,13 +400,12 @@ local function layoutRow(key)
         f:SetSize(size, size)
         f.name:SetText(spellName(id))
         f.name:SetShown(db.showNames)
-        f:ClearAllPoints()
-        f:SetPoint("LEFT", row, "LEFT", (i - 1) * (size + gap), 0)
-        f.slot = i - 1
+        f.slot, f.slotX = nil, nil          -- placed by packRow
         f:Show()
     end
     for i = #slots + 1, #icons[key] do icons[key][i]:Hide() end
     row:SetSize(math.max(#slots, 1) * (size + gap) - gap, size)
+    packRow(key)
     updateRowInteraction(key)
 end
 
@@ -761,10 +790,11 @@ local function updateItemIcon(f)
     local count = C_Item and C_Item.GetItemCount and C_Item.GetItemCount(itemID, false, true)   -- bags + equipped, counting charges
     local have = secret(count) or (count or 0) > 0
     f.icon:SetDesaturated(onCD or not have)
+    f.inactive = not have or (known and not onCD)
     if not have then
-        f:SetAlpha(db.hideReady and 0 or 0.35)          -- run out, or unequipped
+        f:SetAlpha(isHidden("cds", f) and 0 or 0.35)    -- run out, or unequipped
     else
-        f:SetAlpha((not db.hideReady or not known or onCD) and 1 or 0)
+        f:SetAlpha(isHidden("cds", f) and 0 or 1)
     end
     f.count:SetText((not secret(count) and (count or 0) > 1) and count or "")
 end
@@ -788,15 +818,37 @@ local function updateCooldowns(key)
                     else
                         f.cd:Clear()
                     end
+                    -- Lua may not read the timing, but it knows what we cast
+                    -- (onPlayerCast), how long this cooldown lasts (learned below)
+                    -- and when it was due before the timing went secret.
+                    local length = db.cdLengths[f.spellID]
+                    if f.cdCastAt and length then
+                        onCD = GetTime() < f.cdCastAt + length
+                        cooldownStateKnown = true
+                    elseif not f.cdCastAt and f.readyAt then
+                        onCD = GetTime() < f.readyAt
+                        cooldownStateKnown = true
+                    end
                 else
                     local modRate = not secret(c.modRate) and (c.modRate or 1) or 1
                     cooldownStateKnown = not secret(c.isEnabled)
                     local enabled = cooldownStateKnown and c.isEnabled ~= false
                     f.cd:SetCooldown(c.startTime or 0, c.duration or 0, modRate)
                     onCD = (c.duration or 0) > 1.5 and enabled
+                    -- Learn the cooldown's length, and learn "none" from a cast
+                    -- that started no more than the global cooldown.
+                    if onCD then
+                        if db.cdLengths[f.spellID] ~= c.duration then db.cdLengths[f.spellID] = c.duration end
+                        f.cdCastAt = nil
+                    elseif f.cdCastAt and GetTime() - f.cdCastAt >= 0.5 then
+                        if cooldownStateKnown then db.cdLengths[f.spellID] = 0 end
+                        f.cdCastAt = nil
+                    end
+                    f.readyAt = onCD and (c.startTime or 0) + (c.duration or 0) or 0
                 end
                 f.icon:SetDesaturated(onCD)
-                f:SetAlpha((not db.hideReady or not cooldownStateKnown or onCD) and 1 or 0)
+                f.inactive = cooldownStateKnown and not onCD
+                f:SetAlpha(isHidden(key or "cds", f) and 0 or 1)
             end
             local ch = C_Spell and C_Spell.GetSpellCharges and C_Spell.GetSpellCharges(f.spellID)
             if ch and not secret(ch.maxCharges) and (ch.maxCharges or 0) > 1 and not secret(ch.currentCharges) then
@@ -806,6 +858,7 @@ local function updateCooldowns(key)
             end
         end
     end
+    packRow(key or "cds")
 end
 
 -- Spell ranks. Forever lists every rank of a spell as its own spellbook entry
@@ -867,22 +920,103 @@ local function spellAuraSecret(id, globalRestricted)
     return true
 end
 
--- How long does this aura last? A length measured from a readable aura wins;
--- otherwise the tooltip usually says ("...over 15 sec"). English tooltips only,
--- so /fcdm duration <spell> <seconds> can set it by hand.
-local function auraDuration(id)
+-- What a spell does with combo points, read from its tooltip (English or
+-- German): builders award some ("Awards 1 combo point", "Gewährt 1
+-- Combopunkt"); finishers spend them, and the ones that last longer per point
+-- (Slice and Dice, Rupture, Kidney Shot...) list it line by line
+-- ("1 point  : 9 seconds"). Returns { awards = n, finisher = bool,
+-- table = { [points] = seconds } or nil }, or nil while the text is not loaded.
+local comboInfos = {}
+local function comboInfo(id)
+    if comboInfos[id] then return comboInfos[id] end
+    local d = C_Spell and C_Spell.GetSpellDescription and C_Spell.GetSpellDescription(id)
+    if type(d) ~= "string" or secret(d) or d == "" then return nil end   -- not loaded yet: ask again later
+    local info = { awards = 0, finisher = d:find("[Ff]inishing") ~= nil }
+    for line in d:gmatch("[^\r\n]+") do
+        local cp = line:match("(%d+)%s*[Pp]oints?%s*:") or line:match("(%d+)%s*[Pp]unkte?%s*:")
+        if cp then
+            info.finisher = true
+            local sec = line:match(":.-(%d+)%s*[Ss]ec") or line:match(":.-(%d+)%s*[Ss]ek")
+            if sec then
+                info.table = info.table or {}
+                info.table[tonumber(cp)] = tonumber(sec)
+            end
+        end
+    end
+    if not info.finisher then
+        info.awards = tonumber(d:match("(%d+) [Cc]ombo ?[Pp]oints?") or d:match("(%d+) [Cc]ombopunkte?")) or 0
+    end
+    comboInfos[id] = info
+    return info
+end
+
+local function comboTable(id)
+    local info = comboInfo(id)
+    return info and info.table
+end
+
+-- How long does this aura last? cp: the combo points it was cast with, for a
+-- finisher. A length measured from a readable aura wins; otherwise the tooltip
+-- usually says ("...over 15 sec"). English tooltips only, so
+-- /fcdm duration <spell> <seconds> can set it by hand.
+local function auraDuration(id, cp)
+    local combo = comboTable(id)
+    if cp and cp > 0 then
+        local learned = db.comboDurations[id]
+        if learned and learned[cp] then return learned[cp] end
+        if combo and combo[cp] then return combo[cp] end
+    end
     if db.buffDurations[id] then return db.buffDurations[id] end
+    if combo then return nil end        -- the phrases below would pick up a line of the table
     local d = C_Spell and C_Spell.GetSpellDescription and C_Spell.GetSpellDescription(id)
     if type(d) ~= "string" or secret(d) then return nil end
     return tonumber(d:match("over (%d+) sec") or d:match("for (%d+) sec") or d:match("[Ll]asts (%d+) sec"))
 end
 
+-- Combo points. A finisher spends them, and the cast event and the power
+-- update can come in either order, so the count spent a moment ago counts too.
+local comboNow, comboSpent, comboSpentAt = 0, 0, nil
+-- On Forever the combo point count is secret, so it is also counted from our
+-- own casts, which stay readable (noteComboCast). comboCount is that count
+-- (synced to the real one whenever it can be read), on target comboTarget.
+local comboCount, comboTarget = 0, nil
+
+local function readComboPoints()
+    local ok, n = false, nil
+    local power = Enum and Enum.PowerType and Enum.PowerType.ComboPoints
+    if power and UnitPower then ok, n = pcall(UnitPower, "player", power) end
+    if (not ok or n == nil) and GetComboPoints then ok, n = pcall(GetComboPoints, "player", "target") end
+    if not ok or secret(n) or type(n) ~= "number" then return nil end
+    return n
+end
+
+local function updateComboPoints()
+    local n = readComboPoints()
+    if n == nil then                 -- secret now: a count read earlier no longer holds
+        comboNow, comboSpentAt = 0, nil
+        return
+    end
+    if n < comboNow then comboSpent, comboSpentAt = comboNow, GetTime() end
+    comboNow = n
+    local guid = UnitGUID and UnitGUID("target")
+    comboCount, comboTarget = n, not secret(guid) and guid or nil
+end
+
+-- The combo points the finisher just cast used, read from the client, or nil
+-- when the client does not say.
+local function castComboPoints()
+    updateComboPoints()
+    if comboNow > 0 then return comboNow end
+    if comboSpentAt and GetTime() - comboSpentAt < 1 then return comboSpent end
+end
+
 -- An aura that is up and readable: full brightness, real timer, stack count.
-local function drawAura(f, unit, a)
+local function drawAura(f, unit, a, cp, cpSure)
     f.inactive = false
     f:SetAlpha(1)
     f.icon:SetDesaturated(false)
     local dur, exp = a.duration, a.expirationTime
+    f.expiresAt = nil
     if secret(dur) or secret(exp) then
         local duration
         if C_UnitAuras.GetAuraDuration and not secret(a.auraInstanceID) and a.auraInstanceID ~= nil then
@@ -895,12 +1029,20 @@ local function drawAura(f, unit, a)
         end
     elseif dur and dur > 0 then
         f.cd:SetCooldown(exp - dur, dur)
+        -- When it runs out: once combat hides the aura, this says it is gone.
+        f.expiresAt = exp
         -- Remember how long this aura lasts. In combat the aura is
         -- unreadable, but our own cast event plus this number is
-        -- enough to draw an honest timer (see onPlayerCast).
+        -- enough to draw an honest timer (see onPlayerCast). A finisher's
+        -- length depends on the combo points, so it is kept per count too.
         if db.buffDurations[f.spellID] ~= dur then
             db.buffDurations[f.spellID] = dur
             persistSoon()
+        end
+        if cp and cp > 0 and cpSure then
+            local byCP = db.comboDurations[f.spellID] or {}
+            db.comboDurations[f.spellID] = byCP
+            if byCP[cp] ~= dur then byCP[cp] = dur persistSoon() end
         end
     else
         f.cd:Clear()
@@ -913,28 +1055,10 @@ end
 -- visible either way, so there is something to see while dragging.
 local function drawInactive(f)
     f.inactive = true
-    f:SetAlpha((db.hideInactive and db.locked) and 0 or 0.25)
+    f:SetAlpha(isHidden("buffs", f) and 0 or 0.25)
     f.icon:SetDesaturated(true)
     f.cd:Clear()
     f.count:SetText("")
-end
-
--- With "hide inactive" on, close the gaps: visible icons slide left so one
--- active proc does not float in the middle of an empty bar.
-local function packRow(key)
-    local size, gap = db.rowSize[key], db.rowSpacing[key]
-    local collapse = db.hideInactive and db.locked
-    local n = 0
-    for _, f in ipairs(icons[key]) do
-        if f:IsShown() and not (collapse and f.inactive) then
-            if f.slot ~= n then
-                f.slot = n
-                f:ClearAllPoints()
-                f:SetPoint("LEFT", rows[key], "LEFT", n * (size + gap), 0)
-            end
-            n = n + 1
-        end
-    end
 end
 
 -- This buff on the player, under any rank; nil when it is not up or cannot be read.
@@ -995,7 +1119,7 @@ local function updateBuffs()
                 if not secret(a.auraInstanceID) and a.auraInstanceID ~= nil then
                     f.auraInstanceID = a.auraInstanceID
                 end
-                drawAura(f, "player", a)
+                drawAura(f, "player", a, f.castCP, f.castCPSure)
             elseif restricted then
                 -- In combat this client refuses EVERY aura read to addon code
                 -- ("Auras cannot be accessed when secret while tainted"), so the
@@ -1003,10 +1127,15 @@ local function updateBuffs()
                 -- object handed to the widget before combat keeps ticking on its
                 -- own. Only the UNIT_AURA payload (see OnAuraEvent) can tell us it
                 -- dropped; when it does, f.combatRemoved is set.
-                local learned = db.buffDurations[f.spellID]
+                local learned = auraDuration(f.spellID, f.castCP)
                 if f.castAt and learned and GetTime() > f.castAt + learned then
                     f.castAt = nil
                     f.combatRemoved = true        -- our own timer says it ran out
+                end
+                if not f.castAt and f.expiresAt and GetTime() > f.expiresAt then
+                    f.expiresAt = nil
+                    f.auraInstanceID = nil
+                    f.combatRemoved = true        -- the timer read before combat ran out
                 end
                 if f.combatRemoved then
                     drawInactive(f)
@@ -1025,16 +1154,15 @@ local function updateBuffs()
                     f.icon:SetDesaturated(false)
                     f.count:SetText("")
                 else
-                    f.inactive = false
-                    f:SetAlpha(0.6)
-                    f.icon:SetDesaturated(false)
-                    f.cd:Clear()
-                    f.count:SetText("?")
+                    -- Neither seen before combat nor cast by us during it: we
+                    -- have no sign that it is up, so it counts as not up.
+                    drawInactive(f)
                 end
             else
                 f.combatRemoved = nil
                 f.auraInstanceID = nil
                 f.castAt = nil
+                f.expiresAt = nil
                 drawInactive(f)
             end
         end
@@ -1075,7 +1203,7 @@ local function updateDebuffs()
     local tkey = targetKey()
     for _, f in ipairs(icons.debuffs) do
         if f:IsShown() and f.spellID then
-            f.casts, f.castIDs = f.casts or {}, f.castIDs or {}
+            f.casts, f.castIDs, f.castCPs = f.casts or {}, f.castIDs or {}, f.castCPs or {}
             local a, readable = nil, true
             if tkey then
                 -- A combined icon asks after each of its spells and shows the first on the target.
@@ -1092,14 +1220,14 @@ local function updateDebuffs()
                 if not secret(a.duration) and not secret(a.expirationTime) and (a.duration or 0) > 0 then
                     f.casts[tkey], f.castIDs[tkey] = a.expirationTime - a.duration, f.spellID
                 end
-                drawAura(f, "target", a)
+                drawAura(f, "target", a, f.castCPs[tkey], f.castCPSures and f.castCPSures[tkey])
             else
                 -- Readable and absent: it really dropped, unless the cast was a moment
                 -- ago and the aura has not landed yet (application lags the cast event).
                 if readable and tkey and f.casts[tkey] and GetTime() - f.casts[tkey] > 1 then f.casts[tkey] = nil end
                 local castAt = tkey and not readable and f.casts[tkey] or nil
                 if castAt and f.castIDs[tkey] then showMember(f, f.castIDs[tkey]) end   -- the spell cast on THIS target
-                local learned = auraDuration(f.spellID)
+                local learned = auraDuration(f.spellID, tkey and f.castCPs[tkey])
                 if castAt and learned and GetTime() > castAt + learned then
                     f.casts[tkey] = nil    -- our own timer says it ran out
                     castAt = nil
@@ -1178,9 +1306,32 @@ ForeverCDM_AuraDebug = function(n) auraDebugLeft = n or 6 end
 -- tracked buff we cast ourselves can be followed by its cast event instead.
 -- Matching by name as well as ID covers other ranks of the same spell.
 -- Technique seen in Pirson-s-Addons/SealTimersForever (MIT).
+-- Keep the combo point count from our own casts: a builder adds what its
+-- tooltip awards (points belong to one target, so a new target starts over),
+-- a finisher spends them all. Returns, for a finisher, the points it used and
+-- whether the client said so (true) or they were counted (false). A count can
+-- be off (a dodged Sinister Strike still casts), so only a real one is learned.
+local function noteComboCast(spellID)
+    local info = comboInfo(spellID)
+    if not info then return nil end
+    if info.finisher then
+        local cp, sure = castComboPoints(), true
+        if not cp and comboCount > 0 then cp, sure = comboCount, false end
+        comboCount = 0
+        return cp, sure
+    elseif info.awards > 0 then
+        local guid = UnitGUID and UnitGUID("target")
+        if secret(guid) then guid = nil end
+        if guid ~= comboTarget then comboCount = 0 end
+        comboTarget = guid
+        comboCount = math.min(5, comboCount + info.awards)
+    end
+end
+
 local function onPlayerCast(unit, _, spellID)
     if unit ~= "player" or spellID == nil or secret(spellID) then return end
     local castName = spellName(spellID)
+    local cp, cpSure = noteComboCast(spellID)
     for _, f in ipairs(icons.buffs) do
         local m = f.spellID and memberFor(f, spellID, castName)
         if m then
@@ -1189,7 +1340,14 @@ local function onPlayerCast(unit, _, spellID)
             if m ~= f.spellID then f.auraInstanceID = nil end
             showMember(f, m)
             f.castAt = GetTime()
+            f.castCP, f.castCPSure = cp, cpSure
+            f.expiresAt = nil
             f.combatRemoved = nil
+        end
+    end
+    for _, key in ipairs({ "cds", "utilities" }) do
+        for _, f in ipairs(icons[key]) do
+            if f.spellID and f.spellID > 0 and memberFor(f, spellID, castName) then f.cdCastAt = GetTime() end
         end
     end
     local tkey = targetKey()
@@ -1197,8 +1355,10 @@ local function onPlayerCast(unit, _, spellID)
     for _, f in ipairs(icons.debuffs) do
         local m = f.spellID and memberFor(f, spellID, castName)
         if m then
-            f.casts, f.castIDs = f.casts or {}, f.castIDs or {}
-            f.casts[tkey], f.castIDs[tkey] = GetTime(), m
+            f.casts, f.castIDs, f.castCPs = f.casts or {}, f.castIDs or {}, f.castCPs or {}
+            f.casts[tkey], f.castIDs[tkey], f.castCPs[tkey] = GetTime(), m, cp
+            f.castCPSures = f.castCPSures or {}
+            f.castCPSures[tkey] = cpSure
         end
     end
 end
@@ -1858,6 +2018,8 @@ ev:SetScript("OnEvent", function(self, event, ...)
         self:RegisterUnitEvent("UNIT_AURA", "player", "target")
         self:RegisterEvent("PLAYER_TARGET_CHANGED")
         self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+        pcall(self.RegisterUnitEvent, self, "UNIT_POWER_FREQUENT", "player")   -- combo points (castComboPoints)
+        updateComboPoints()
         self:RegisterEvent("SPELLS_CHANGED")
         self:RegisterEvent("PLAYER_LOGOUT")
         -- pcall: registering an event this client lacks throws and would abort the handler
@@ -1879,11 +2041,16 @@ ev:SetScript("OnEvent", function(self, event, ...)
         onAuraEvent(...)
         updateBuffs()
         updateDebuffs()
+    elseif event == "UNIT_POWER_FREQUENT" then
+        updateComboPoints()
     elseif event == "PLAYER_TARGET_CHANGED" then
+        updateComboPoints()
         updateDebuffs()
         applyFade()
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         onPlayerCast(...)
+        updateCooldowns("cds")
+        updateCooldowns("utilities")
         updateBuffs()
         updateDebuffs()
     elseif event == "PLAYER_LOGOUT" then
@@ -1908,7 +2075,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
         updateRowInteractions(false)
         if mirror.deleteAfterCombat then mirror.deleteAfterCombat = nil deleteMirror() end
         if mirror.afterCombat then mirror.afterCombat = nil writeMirror() end
-        for _, f in ipairs(icons.debuffs) do f.casts, f.castIDs = nil, nil end   -- auras are readable again; drop the estimates
+        for _, f in ipairs(icons.debuffs) do f.casts, f.castIDs, f.castCPs, f.castCPSures = nil, nil, nil, nil end   -- auras are readable again; drop the estimates
         updateDebuffs()
     elseif event == "ADDON_LOADED" or event == "PLAYER_ENTERING_WORLD" then
         if not (InCombatLockdown and InCombatLockdown()) then
@@ -1926,7 +2093,10 @@ ev:SetScript("OnEvent", function(self, event, ...)
 end)
 
 -- Light periodic refresh so buff swipes stay honest across secret transitions.
-C_Timer.NewTicker(0.5, function() if db then updateBuffs() updateDebuffs() end end)
+-- Cooldowns too: in combat their end can be one we estimate (see updateCooldowns).
+C_Timer.NewTicker(0.5, function()
+    if db then updateCooldowns("cds") updateCooldowns("utilities") updateBuffs() updateDebuffs() end
+end)
 
 -- Slash ------------------------------------------------------------------------------
 

@@ -14,7 +14,8 @@ end
 
 local secretValue = {}
 local icons = { cds = {}, buffs = {}, debuffs = {} }
-local db = { hideReady = true, buffDurations = {}, locked = true, rowSize = { buffs = 36 }, rowSpacing = { buffs = 4 } }
+local db = { hideReady = true, buffDurations = {}, cdLengths = {}, locked = true, rowSize = { buffs = 36, cds = 36 }, rowSpacing = { buffs = 4, cds = 4 } }
+GetTime = function() return 5 end
 local function secret(value) return value == secretValue end
 local cooldownInfo, spellDuration, auraDuration
 local spellCalls, auraCalls = 0, 0
@@ -55,8 +56,9 @@ end
 icons.cds[1] = frame()
 icons.buffs[1] = frame()
 
-local chunk = "local icons, db, secret, C_Spell, C_UnitAuras = ...; local persistSoon = function() end; local rows = { buffs = {} }; "
-    .. block("updateCooldowns", "updateBuffs") .. "\n"
+local chunk = "local icons, db, secret, C_Spell, C_UnitAuras = ...; local persistSoon = function() end; local rows = { buffs = {}, cds = {} }; "
+    .. block("isHidden", "layoutRow") .. "\n"
+    .. block("updateItemIcon", "updateBuffs") .. "\n"
     .. block("updateBuffs", "refreshAll")
 local updateCooldowns, updateBuffs = assert(load(chunk .. "\nreturn updateCooldowns, updateBuffs"))(icons, db, secret, C_Spell, C_UnitAuras)
 
@@ -114,7 +116,7 @@ assert(icons.buffs[1].alpha == 0.25 and cooldown.calls[#cooldown.calls][1] == 'c
 icons.buffs[1].combatRemoved = nil
 icons.buffs[1].auraInstanceID = nil
 updateBuffs()
-assert(icons.buffs[1].alpha == 0.6 and cooldown.calls[#cooldown.calls][1] == 'clear', 'never-seen aura in combat is unknown')
+assert(icons.buffs[1].alpha == 0.25 and cooldown.calls[#cooldown.calls][1] == 'clear', 'never-seen aura in combat counts as not up')
 C_Secrets.ShouldAurasBeSecret = function() return false end
 updateBuffs()
 assert(icons.buffs[1].alpha == 0.25 and icons.buffs[1].auraInstanceID == nil, 'confirmed absence must clear cached instance')

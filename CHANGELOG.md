@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1 (2026-09-29)
+- **Buffs only show while they are up.** "Hide inactive auras" is now on for new installs (existing
+  setups keep their choice; tick it in `/fcdm`). In combat a tracked buff that was neither up before
+  the fight nor cast by you no longer lights up with a "?"; it counts as not up.
+- A buff that was up when combat started now disappears when the timer read before the fight runs
+  out, instead of staying lit until combat ends.
+- **Finishers show their real length.** Slice and Dice (and Rupture, Kidney Shot...) last longer per
+  combo point. The combo points spent are noted with the cast, and the timer comes from the length
+  measured for that many points, or else from the tooltip's per-point table. Before, a finisher first
+  cast in combat showed no timer at all, and later ones used whatever length was measured last.
+- Buffs cast in combat fall back to the tooltip's duration when none was measured yet, like debuffs.
+- **Combo points are counted** where the client keeps them secret (Forever): each builder you cast
+  adds what its tooltip awards ("Awards 1 combo point"), a new target starts over, a finisher spends
+  them. A counted value can be off (a dodged strike still casts), so it picks the timer but is never
+  stored as a learned length. English and German tooltips are understood.
+- **Icons are centred on their bar** and spread evenly to both sides; hidden icons give up their
+  place, so the visible ones stay together in the middle. Applies to every bar.
+- **The Cooldowns bar only shows spells on cooldown.** "Hide ready cooldowns" is now on for new
+  installs (existing setups keep their choice; tick it in `/fcdm`). Ready spells and spells without
+  a cooldown leave the bar, like hidden auras, and all of them show while the rows are unlocked.
+- In combat, where the client hides cooldown timings, a ready spell no longer shows just because its
+  state is unreadable: the addon uses the time the cooldown was due before the fight, or your own
+  cast plus the cooldown length it learned out of combat (a spell with none is learned as none).
+
 ## 0.8.0 (2026-09-26)
 - **Each character keeps its own tracked spells.** Saved settings are shared by every character
   on the account, so once the beta started loading them a paladin could open on a hunter's bars.

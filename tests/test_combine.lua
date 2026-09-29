@@ -78,7 +78,7 @@ C_UnitAuras = {
 
 -- Righteous Fury first, then three seals combined into one icon; two stings combined.
 ForeverCDMDB = { buffs = { RF, SOR, SOC, SOTC }, debuffs = { SERPENT, SCORPID },
-    links = { buffs = { SOC, SOTC }, debuffs = { SCORPID } }, buffDurations = { [SOR] = 30, [SOC] = 30, [SOTC] = 30 } }
+    links = { buffs = { SOC, SOTC }, debuffs = { SCORPID } }, buffDurations = { [SOR] = 30, [SOC] = 30, [SOTC] = 30 }, hideInactive = false }
 assert(loadfile('ForeverCDM.lua'))('ForeverCDM')
 local function fire(event, ...)
     for _, f in ipairs(frames) do if f.events[event] then f.scripts.OnEvent(f, event, ...) end end
